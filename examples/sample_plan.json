@@ -1,0 +1,61 @@
+{
+  "status": "ok",
+  "goal": "创建一个带四个安装孔和倒角的底板",
+  "assumptions": [
+    "单位默认为 mm",
+    "孔距边缘 10mm"
+  ],
+  "missing_params": [],
+  "question": null,
+  "plan": [
+    {
+      "step_id": "S1",
+      "description": "创建底板实体",
+      "tool": "create_box",
+      "args": {
+        "name": "BasePlate",
+        "length": 100,
+        "width": 60,
+        "height": 10,
+        "unit": "mm"
+      },
+      "depends_on": [],
+      "expected_result": {
+        "object": "BasePlate",
+        "type": "Part::Box"
+      }
+    },
+    {
+      "step_id": "S2",
+      "description": "在底板四角创建通孔",
+      "tool": "cut_corner_holes",
+      "args": {
+        "target": "BasePlate",
+        "hole_diameter": 5,
+        "margin_x": 10,
+        "margin_y": 10,
+        "through_all": true
+      },
+      "depends_on": ["S1"],
+      "expected_result": {
+        "object": "BasePlate",
+        "type": "Part::Cut"
+      }
+    },
+    {
+      "step_id": "S3",
+      "description": "添加外边倒角",
+      "tool": "add_fillet",
+      "args": {
+        "target": "BasePlate",
+        "radius": 3,
+        "edge_selector": "outer_edges"
+      },
+      "depends_on": ["S2"],
+      "expected_result": {
+        "object": "BasePlate",
+        "type": "Part::Fillet"
+      }
+    }
+  ]
+}

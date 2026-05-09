@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+env/
+
+# Environment
+.env
+.env.local
+
+# FreeCAD backup files
+*.FCStd1
+*.FCBak
+*.FCStd.bak
+
+# Agent service data
+agent_service/data/
+*.db
+*.sqlite3
+
+# Exports
+exports/
+*.step
+*.stp
+*.stl
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Windows
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# OS
+.DS_Store

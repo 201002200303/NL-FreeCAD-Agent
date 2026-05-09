@@ -1,0 +1,79 @@
+{
+  "test_cases": [
+    {
+      "name": "创建长方体底座",
+      "request": {
+        "user_input": "创建一个 100×60×20mm 的底座",
+        "document_state": {
+          "document_name": "Unnamed",
+          "objects": [],
+          "selected_objects": []
+        }
+      },
+      "expected_status": "ok",
+      "expected_tool": "create_box"
+    },
+    {
+      "name": "创建圆柱体",
+      "request": {
+        "user_input": "创建一个 R25 H50 的圆柱体",
+        "document_state": {
+          "document_name": "Unnamed",
+          "objects": [],
+          "selected_objects": []
+        }
+      },
+      "expected_status": "ok",
+      "expected_tool": "create_cylinder"
+    },
+    {
+      "name": "无法识别的输入",
+      "request": {
+        "user_input": "帮我做个齿轮",
+        "document_state": {
+          "document_name": "Unnamed",
+          "objects": [],
+          "selected_objects": []
+        }
+      },
+      "expected_status": "need_more_info"
+    },
+    {
+      "name": "创建盒子 (英文)",
+      "request": {
+        "user_input": "create a box 50x30x10 mm",
+        "document_state": {
+          "document_name": "Unnamed",
+          "objects": [],
+          "selected_objects": []
+        }
+      },
+      "expected_status": "ok",
+      "expected_tool": "create_box"
+    },
+    {
+      "name": "带文档状态 — 修改已有底座",
+      "request": {
+        "user_input": "把这个底座的厚度改为 25mm",
+        "document_state": {
+          "document_name": "MyPart",
+          "objects": [
+            {
+              "name": "BasePlate",
+              "label": "BasePlate",
+              "type": "Part::Box",
+              "properties": {
+                "Length": 100,
+                "Width": 60,
+                "Height": 20
+              }
+            }
+          ],
+          "selected_objects": ["BasePlate"]
+        }
+      },
+      "expected_status": "need_more_info",
+      "note": "V0.1 stub does not understand modification yet"
+    }
+  ]
+}
