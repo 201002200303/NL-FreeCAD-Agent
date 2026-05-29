@@ -1,19 +1,33 @@
 """
-Rule-based plan generator (stub).
+Plan generator - LLM-based with rule-based fallback.
 
-In V0.1, this uses simple keyword matching to generate a modeling plan.
-It will be replaced by LangGraph + LLM structured output in V0.4+.
+V0.4: Integrated LLM structured output for plan generation.
+Rule-based generator retained as fallback when LLM is unavailable.
 """
 
 import re
 from app.schemas.cad_state import DocumentState
+from app.llm.llm_provider import generate_plan_with_llm
 
 
 def generate_plan(user_input: str, document_state: DocumentState | None = None) -> dict:
     """
-    Stub plan generator using keyword rules.
+    生成建模计划。优先使用 LLM，失败时回退到规则引擎。
 
     Returns a dict matching the PlanResponse schema.
+    """
+    # 尝试使用 LLM 生成计划
+    llm_result = generate_plan_with_llm(user_input)
+    if llm_result is not None:
+        return llm_result
+    
+    # LLM 失败，回退到规则引擎
+    return _generate_plan_with_rules(user_input, document_state)
+
+
+def _generate_plan_with_rules(user_input: str, document_state: DocumentState | None = None) -> dict:
+    """
+    规则引擎回退方案：使用关键词匹配生成计划。
     """
     text = user_input.lower()
 
@@ -21,7 +35,7 @@ def generate_plan(user_input: str, document_state: DocumentState | None = None) 
     dims = _extract_dimensions(user_input)
 
     # Rule: box / baseplate / 底座 / 长方体
-    if _matches(text, ["底座", "长方体", "盒子", "box", "底板", "baseplate", "block"]):
+    if _matches(text, ["底座", "长方体", "立方体", "盒子", "box", "底板", "baseplate", "block"]):
         length = dims.get("length", 100)
         width = dims.get("width", 60)
         height = dims.get("height", 20)
@@ -120,9 +134,10 @@ def _pick_name(text: str, default: str) -> str:
 
 
 def _extract_dimensions(text: str) -> dict[str, float]:
-    """Extract dimensions like 100×60×20 from input."""
+    """Extract dimensions from input."""
     dims: dict[str, float] = {}
-    # Match patterns like "100×60×20" or "100*60*20" or "100x60x20"
+
+    # Pattern 1: "100×60×20" or "100*60*20" or "100x60x20"
     pattern = r"(\d+(?:\.\d+)?)\s*[×x\*]\s*(\d+(?:\.\d+)?)\s*[×x\*]\s*(\d+(?:\.\d+)?)"
     match = re.search(pattern, text)
     if match:
@@ -130,9 +145,44 @@ def _extract_dimensions(text: str) -> dict[str, float]:
         dims["width"] = float(match.group(2))
         dims["height"] = float(match.group(3))
         return dims
-    # Match "R25" or "半径25" for radius
+
+    # Pattern 2: "长200宽150高100" (Chinese labeled dimensions)
+    lwh = re.search(r"长\s*(\d+(?:\.\d+)?)\s*宽\s*(\d+(?:\.\d+)?)\s*高\s*(\d+(?:\.\d+)?)", text)
+    if lwh:
+        dims["length"] = float(lwh.group(1))
+        dims["width"] = float(lwh.group(2))
+        dims["height"] = float(lwh.group(3))
+        return dims
+
+    # Pattern 3: "长宽高都是50" (all same value)
+    same_val = re.search(r"长\s*宽\s*高\s*都\s*是?\s*(\d+(?:\.\d+)?)", text)
+    if same_val:
+        v = float(same_val.group(1))
+        dims["length"] = v
+        dims["width"] = v
+        dims["height"] = v
+        return dims
+
+    # Pattern 4: individual labeled dims "长100" "宽50" "高30"
+    for key, label in [("length", "长"), ("width", "宽"), ("height", "高")]:
+        m = re.search(rf"{label}\s*(\d+(?:\.\d+)?)", text)
+        if m:
+            dims[key] = float(m.group(1))
+
+    # "R25" or "半径25" for radius
     radius_pattern = r"[Rr]\s*(\d+(?:\.\d+)?)"
     match = re.search(radius_pattern, text)
     if match:
         dims["radius"] = float(match.group(1))
+    else:
+        m = re.search(r"半径\s*(\d+(?:\.\d+)?)", text)
+        if m:
+            dims["radius"] = float(m.group(1))
+
+    # "高度50" for height (only if not already extracted)
+    if "height" not in dims:
+        m = re.search(r"高度\s*(\d+(?:\.\d+)?)", text)
+        if m:
+            dims["height"] = float(m.group(1))
+
     return dims

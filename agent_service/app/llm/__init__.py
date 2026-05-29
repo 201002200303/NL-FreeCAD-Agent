@@ -1,1 +1,1 @@
-# LLM interfaces (stub — will be implemented in V0.5+)
+# LLM interfaces - V0.4 implementation

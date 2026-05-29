@@ -47,6 +47,15 @@ class AICADPanel(QtGui.QDockWidget):
         self.generate_btn.clicked.connect(self._on_generate_plan)
         layout.addWidget(self.generate_btn)
 
+        # Execute button
+        self.execute_btn = QtGui.QPushButton("执行计划 (Execute Plan)")
+        self.execute_btn.clicked.connect(self._on_execute_plan)
+        self.execute_btn.setEnabled(False)
+        layout.addWidget(self.execute_btn)
+
+        # Cache the last plan
+        self._last_plan = None
+
         # Output section
         layout.addWidget(QtGui.QLabel("建模计划 (Plan):"))
         self.log_edit = QtGui.QTextEdit()
@@ -108,12 +117,15 @@ class AICADPanel(QtGui.QDockWidget):
             self._log(json.dumps(result, ensure_ascii=False, indent=2))
 
             if result.get("plan"):
+                self._last_plan = result["plan"]
+                self.execute_btn.setEnabled(True)
                 self._log(f"\n← 共 {len(result['plan'])} 个步骤:")
                 for step in result["plan"]:
                     self._log(
                         f"  {step['step_id']}: {step['description']} "
                         f"[tool={step['tool']}]"
                     )
+                self._log("\n点击 [执行计划] 按钮开始建模...")
 
         except urllib.error.URLError as e:
             self._log(f"错误: 无法连接到 Agent 服务 ({e})")
@@ -122,6 +134,38 @@ class AICADPanel(QtGui.QDockWidget):
             self._log(f"错误: 无法解析服务返回的 JSON ({e})")
         except Exception as e:
             self._log(f"错误: {e}")
+
+    def _on_execute_plan(self):
+        """Execute the cached plan on the active FreeCAD document."""
+        if not self._last_plan:
+            self._log("错误: 没有可执行的计划，请先生成建模计划。")
+            return
+
+        self._log("\n=== 开始执行建模计划 ===")
+        self.execute_btn.setEnabled(False)
+
+        try:
+            from AICADAgent.executor import CadToolExecutor
+            executor = CadToolExecutor()
+        except RuntimeError as e:
+            self._log(f"错误: {e}")
+            self.execute_btn.setEnabled(True)
+            return
+
+        results = executor.execute_plan(self._last_plan)
+
+        success_count = 0
+        for r in results:
+            step_id = r.get("step_id", "?")
+            status = r.get("status", "unknown")
+            if status == "success":
+                success_count += 1
+                self._log(f"  [✓] {step_id}: {r.get('tool', '')} → {r.get('object', r.get('filepath', ''))}")
+            else:
+                self._log(f"  [✗] {step_id}: {r.get('tool', '')} → {r.get('message', '未知错误')}")
+
+        self._log(f"\n=== 执行完成: {success_count}/{len(results)} 步成功 ===")
+        self.execute_btn.setEnabled(True)
 
     def _log(self, text: str):
         """Append text to the log output."""

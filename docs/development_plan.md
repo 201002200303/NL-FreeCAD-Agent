@@ -2,7 +2,7 @@
 
 ## Version Roadmap
 
-### V0.1 — Project Bootstrap (当前)
+### V0.1 — Project Bootstrap ✓
 
 **目标**：项目初始化，骨架搭建，验证通信链路。
 
@@ -19,70 +19,63 @@
 - [x] .gitignore
 - [x] 示例文件
 
-**可验证**：
-```powershell
-cd agent_service
-uvicorn app.main:app --host 127.0.0.1 --port 8765
-# 访问 http://127.0.0.1:8765/health -> {"status":"ok"}
-# POST /agent/plan 返回规则生成的 plan
-```
-
 ---
 
-### V0.2 — Rule-based Plan Display
+### V0.2 — Rule-based Plan Display ✓
 
 **目标**：完善规则引擎，FreeCAD 面板显示完整的 Plan JSON。
 
 **内容**：
-- [ ] 扩展 planner.py 规则覆盖更多场景
-- [ ] 面板展示 Plan 步骤概要
-- [ ] 面板展示 missing_params 提问
-- [ ] 面板日志格式化输出
+- [x] 扩展 planner.py 规则覆盖更多场景
+- [x] 面板展示 Plan 步骤概要
+- [x] 面板展示 missing_params 提问
+- [x] 面板日志格式化输出
 
 ---
 
-### V0.3 — Basic Execution
+### V0.3 — Basic Execution ✓
 
-**目标**：FreeCAD 插件能够执行 create_box 和 create_cylinder。
+**目标**：FreeCAD 插件能够执行 create_box 和 create_cylinder，executor 与 cad_tools 解耦。
 
 **内容**：
-- [ ] executor.py 完整实现 create_box / create_cylinder
-- [ ] 面板添加 "执行 Plan" 按钮
-- [ ] 逐步执行并实时更新 FreeCAD 特征树
-- [ ] 执行结果日志
-- [ ] 事务回滚测试
-
-**可验证**：
-1. 打开 FreeCAD，新建文档
-2. 在面板输入 "创建一个长方体"
-3. 点击 "生成建模计划"
-4. 点击执行，FreeCAD 文档中出现 Part::Box
+- [x] cad_tools/ 模块拆分 (primitive_tools, modify_tools, export_tools)
+- [x] TOOL_REGISTRY 注册表机制
+- [x] executor.py 精简为纯调度+事务管理
+- [x] 面板添加 "执行 Plan" 按钮
+- [x] 端到端验证：输入 → plan → 执行 → FreeCAD 出现模型
 
 ---
 
-### V0.4 — LangGraph Integration
+### V0.4 — LLM Structured Output (当前)
 
-**目标**：引入 LangGraph 编排 plan 生成流程。
+**目标**：接入 LLM，用 system prompt + user_input + tool_specs 生成建模 Plan，验证 LLM 输出能驱动建模。
+
+**内容**：
+- [ ] 接入 OpenAI-compatible API (chat completions)
+- [ ] 构建 system prompt：角色 + 可用工具 + 输出格式 + 规则
+- [ ] 实现 LLM structured output (JSON mode)
+- [ ] 将已实现的 tool_specs 注入 prompt
+- [ ] LLM planner 替代规则 planner（规则保留为 fallback）
+- [ ] 验证：LLM 生成的 plan 能在 FreeCAD 中执行建模
+
+**可验证**：
+1. 启动 agent_service
+2. 输入任意自然语言建模需求（不限关键词）
+3. LLM 返回结构化 plan
+4. 在 FreeCAD 中执行，模型正确创建
+
+---
+
+### V0.5 — LangGraph Integration
+
+**目标**：引入 LangGraph 编排 LLM plan 生成流程，增加校验、重试、文档状态推断。
 
 **内容**：
 - [ ] 实现 graph/cad_graph.py 的完整工作流
-- [ ] parse_input → plan → validate_plan 节点
+- [ ] parse_input → llm_plan → validate_plan 节点
 - [ ] 集成 tool_specs 到 plan 校验
 - [ ] 支持从文档状态中推断参数
-
----
-
-### V0.5 — LLM Structured Output
-
-**目标**：接入 LLM 生成建模 Plan。
-
-**内容**：
-- [ ] 接入 OpenAI-compatible API
-- [ ] 实现 LLM structured output (JSON mode)
-- [ ] 将 tool_specs 注册为 LLM function tools
-- [ ] LLM planner 替代规则 planner
-- [ ] Prompt 工程：few-shot examples
-- [ ] 参数抽取：从自然语言中提取尺寸、位置等
+- [ ] 错误重试机制
 
 ---
 
