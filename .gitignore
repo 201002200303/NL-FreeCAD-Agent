@@ -33,6 +33,7 @@ exports/
 # Logs
 logs/
 *.log
+agent_service/debug_sessions/
 
 # IDE
 .vscode/

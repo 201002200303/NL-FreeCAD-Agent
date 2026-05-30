@@ -2,12 +2,18 @@
 Plan generator - LLM-based with rule-based fallback.
 
 V0.4: Integrated LLM structured output for plan generation.
+V0.7: Added high-level plan generation for closed-loop architecture.
 Rule-based generator retained as fallback when LLM is unavailable.
 """
 
 import re
 from app.schemas.cad_state import DocumentState
-from app.llm.llm_provider import generate_plan_with_llm
+from app.llm.llm_provider import (
+    generate_plan_with_llm,
+    generate_high_level_plan_with_llm,
+    generate_next_tool_calls_with_llm,
+    evaluate_step_with_llm,
+)
 
 
 def generate_plan(user_input: str, document_state: DocumentState | None = None) -> dict:
@@ -16,13 +22,135 @@ def generate_plan(user_input: str, document_state: DocumentState | None = None) 
 
     Returns a dict matching the PlanResponse schema.
     """
-    # 尝试使用 LLM 生成计划
-    llm_result = generate_plan_with_llm(user_input)
+    llm_result = generate_plan_with_llm(user_input, document_state)
     if llm_result is not None:
         return llm_result
-    
-    # LLM 失败，回退到规则引擎
+
     return _generate_plan_with_rules(user_input, document_state)
+
+
+def generate_high_level_plan(
+    user_input: str, document_state: DocumentState | None = None
+) -> dict:
+    """
+    生成高层建模计划（phase-level，不绑定具体工具参数）。
+
+    V0.7: 用于闭环架构的 start_plan 端点。
+    """
+    llm_result = generate_high_level_plan_with_llm(user_input, document_state)
+    if llm_result is not None:
+        return llm_result
+
+    return _generate_high_level_plan_with_rules(user_input, document_state)
+
+
+def generate_next_tool_calls(
+    session_id: str,
+    user_input: str,
+    high_level_plan: dict,
+    current_phase_id: str,
+    document_state: DocumentState,
+    execution_history: dict,
+    name_map: dict[str, str],
+) -> dict:
+    """
+    生成下一步工具调用。
+
+    V0.7: 用于闭环架构的 next_step 端点。
+    """
+    return generate_next_tool_calls_with_llm(
+        session_id=session_id,
+        user_input=user_input,
+        high_level_plan=high_level_plan,
+        current_phase_id=current_phase_id,
+        document_state=document_state,
+        execution_history=execution_history,
+        name_map=name_map,
+    )
+
+
+def evaluate_step_result(
+    session_id: str,
+    last_tool_call: dict,
+    execution_result: dict,
+    document_state: DocumentState,
+    execution_history: dict,
+    high_level_plan: dict | None = None,
+    current_phase_id: str | None = None,
+) -> dict:
+    """
+    评估步骤执行结果，决定下一步动作。
+
+    V0.7: 用于闭环架构的 evaluate_step 端点。
+    """
+    return evaluate_step_with_llm(
+        session_id=session_id,
+        last_tool_call=last_tool_call,
+        execution_result=execution_result,
+        document_state=document_state,
+        execution_history=execution_history,
+        high_level_plan=high_level_plan,
+        current_phase_id=current_phase_id,
+    )
+
+
+def _generate_high_level_plan_with_rules(
+    user_input: str, document_state: DocumentState | None = None
+) -> dict:
+    """
+    规则引擎回退方案：生成简单的高层计划。
+    """
+    text = user_input.lower()
+
+    # 简单任务：单阶段
+    if _matches(text, ["底座", "长方体", "立方体", "盒子", "box", "圆柱", "cylinder"]):
+        return {
+            "status": "ok",
+            "user_input": user_input,
+            "goal": user_input,
+            "phases": [
+                {
+                    "phase_id": "P1",
+                    "title": "基础几何",
+                    "intent": user_input,
+                    "success_criteria": [],
+                }
+            ],
+            "assumptions": ["单位默认为 mm"],
+        }
+
+    # 复杂任务：多阶段（简单启发式）
+    if _matches(text, ["台灯", "椅子", "桌子", "模型"]):
+        return {
+            "status": "ok",
+            "user_input": user_input,
+            "goal": user_input,
+            "phases": [
+                {
+                    "phase_id": "P1",
+                    "title": "底座",
+                    "intent": "创建底座",
+                    "success_criteria": [],
+                },
+                {
+                    "phase_id": "P2",
+                    "title": "主体",
+                    "intent": "创建主体结构",
+                    "success_criteria": [],
+                },
+            ],
+            "assumptions": ["单位默认为 mm"],
+        }
+
+    # 无法理解
+    return {
+        "status": "need_more_info",
+        "user_input": user_input,
+        "goal": "无法确定建模目标",
+        "phases": [],
+        "assumptions": [],
+        "question": "请描述您想创建的模型。",
+    }
 
 
 def _generate_plan_with_rules(user_input: str, document_state: DocumentState | None = None) -> dict:

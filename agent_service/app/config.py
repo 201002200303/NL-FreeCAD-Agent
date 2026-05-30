@@ -12,3 +12,6 @@ OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o")
 
 VERSION = "0.1.0"
+
+LLM_DEBUG = os.getenv("LLM_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
+LLM_DEBUG_DIR = os.getenv("LLM_DEBUG_DIR", "")
