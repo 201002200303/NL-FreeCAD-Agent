@@ -1,7 +1,8 @@
 # primitive_tools.py — Basic Part primitives (Box, Cylinder, Sphere, Cone, Torus)
 
-import FreeCAD
 import Part
+
+from AICADAgent.cad_tools._helpers import apply_placement
 
 
 def create_box(doc, name="Box", length=10, width=10, height=10, unit="mm",
@@ -17,13 +18,13 @@ def create_box(doc, name="Box", length=10, width=10, height=10, unit="mm",
 
 
 def create_cylinder(doc, name="Cylinder", radius=10, height=20, unit="mm",
-                    pos_x=0, pos_y=0, pos_z=0):
-    """Create a Part::Cylinder in the given document with optional position."""
+                    pos_x=0, pos_y=0, pos_z=0, rot_x=0, rot_y=0, rot_z=0):
+    """Create a Part::Cylinder in the given document with optional position/rotation."""
     cyl = doc.addObject("Part::Cylinder", name)
     cyl.Radius = radius
     cyl.Height = height
     cyl.Label = name
-    apply_placement(cyl, pos_x, pos_y, pos_z)
+    apply_placement(cyl, pos_x, pos_y, pos_z, rot_x, rot_y, rot_z)
     return {"tool": "create_cylinder", "object": cyl.Name, "label": cyl.Label, "type": "Part::Cylinder"}
 
 
@@ -57,8 +58,3 @@ def create_torus(doc, name="Torus", radius1=20, radius2=5, unit="mm",
     torus.Label = name
     apply_placement(torus, pos_x, pos_y, pos_z)
     return {"tool": "create_torus", "object": torus.Name, "label": torus.Label, "type": "Part::Torus"}
-
-
-def apply_placement(obj, pos_x=0, pos_y=0, pos_z=0):
-    if pos_x != 0 or pos_y != 0 or pos_z != 0:
-        obj.Placement.Base = FreeCAD.Vector(pos_x, pos_y, pos_z)

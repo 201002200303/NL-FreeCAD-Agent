@@ -77,6 +77,10 @@ def evaluate_step_result(
     execution_history: dict,
     high_level_plan: dict | None = None,
     current_phase_id: str | None = None,
+    *,
+    deterministic_checks: dict | None = None,
+    validator_results: list[dict] | None = None,
+    current_abstract_step: dict | None = None,
 ) -> dict:
     """
     评估步骤执行结果，决定下一步动作。
@@ -91,6 +95,9 @@ def evaluate_step_result(
         execution_history=execution_history,
         high_level_plan=high_level_plan,
         current_phase_id=current_phase_id,
+        deterministic_checks=deterministic_checks,
+        validator_results=validator_results,
+        current_abstract_step=current_abstract_step,
     )
 
 

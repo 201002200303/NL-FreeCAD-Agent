@@ -6,7 +6,12 @@ import FreeCAD
 import FreeCADGui
 
 from AICADAgent.agent_runner import AgentRunner
-from AICADAgent.debug_settings import is_debug_mode, set_debug_mode, get_debug_sessions_dir
+from AICADAgent.debug_settings import (
+    is_debug_mode,
+    set_debug_mode,
+    get_debug_sessions_dir,
+    resolve_debug_open_path,
+)
 
 
 class AICADPanel(QtGui.QDockWidget):
@@ -38,7 +43,7 @@ class AICADPanel(QtGui.QDockWidget):
         layout.addWidget(self.input_edit)
 
         # Plan button
-        self.start_plan_btn = QtGui.QPushButton("生成高层计划 (Start Plan)")
+        self.start_plan_btn = QtGui.QPushButton("生成计划 (逐步执行)")
         self.start_plan_btn.clicked.connect(self._on_start_plan)
         layout.addWidget(self.start_plan_btn)
 
@@ -67,7 +72,7 @@ class AICADPanel(QtGui.QDockWidget):
 
         # Debug settings
         debug_layout = QtGui.QHBoxLayout()
-        self.debug_checkbox = QtGui.QCheckBox("调试模式 (保存 LLM 上下文)")
+        self.debug_checkbox = QtGui.QCheckBox("调试模式 (记录每步 LLM 输入/输出)")
         self.debug_checkbox.setChecked(is_debug_mode())
         self.debug_checkbox.toggled.connect(self._on_debug_toggled)
         debug_layout.addWidget(self.debug_checkbox)
@@ -147,7 +152,7 @@ class AICADPanel(QtGui.QDockWidget):
     def _on_open_debug_dir(self):
         import os
         import subprocess
-        path = get_debug_sessions_dir()
+        path = resolve_debug_open_path(self._runner.debug_session_path)
         os.makedirs(path, exist_ok=True)
         if os.name == "nt":
             os.startfile(path)

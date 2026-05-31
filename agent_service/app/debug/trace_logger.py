@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
+
+_logger = logging.getLogger(__name__)
 
 _trace_session: ContextVar[Optional["TraceSession"]] = ContextVar("trace_session", default=None)
 _current_step_name: ContextVar[Optional[str]] = ContextVar("current_step_name", default=None)
@@ -96,14 +99,22 @@ class TraceSession:
         )
         if not candidates:
             return None
-        session = cls(session_id, candidates[0])
+        session = cls.__new__(cls)
+        session.session_id = session_id
+        session.root_dir = candidates[0]
+        session.llm_call_counter = 0
+        session._summary = {
+            "session_id": session_id,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "steps": [],
+        }
         summary_path = session.root_dir / "session_summary.json"
         if summary_path.exists():
             try:
                 session._summary = json.loads(summary_path.read_text(encoding="utf-8"))
-                session.step_counter = len(session._summary.get("steps", []))
             except Exception:
                 pass
+        session.step_counter = len(session._summary.get("steps", []))
         return session
 
     @property

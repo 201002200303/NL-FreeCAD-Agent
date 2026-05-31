@@ -47,10 +47,14 @@ def normalize_evaluate_decision(
     current_phase_id: str | None,
 ) -> dict:
     """Prevent premature finish when more phases remain."""
-    if not high_level_plan or not current_phase_id:
-        return result
-
     out = dict(result)
+    if out.get("abstract_step_completed"):
+        out["decision"] = "finish"
+        out["phase_status"] = "completed"
+        return out
+
+    if not high_level_plan or not current_phase_id:
+        return out
     decision = out.get("decision", "continue")
     phase_status = out.get("phase_status", "in_progress")
     next_phase = get_next_phase_id(high_level_plan, current_phase_id)

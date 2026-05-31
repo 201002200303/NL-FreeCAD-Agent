@@ -1,5 +1,49 @@
 # Development Log
 
+## 2026-05-29: V0.8 CAD Harness Core
+
+**目标**: Spec → Impact → Recipe → Abstract Step 队列 → 滚动 tool_calls → validators → 推进 queue（非 sub_plan 脚本）。
+
+**改动**:
+1. **Agent Service**: `cad_spec/`, `inspection/impact_map.py`, `recipes/registry.py`, `abstract_steps/planner.py`, `evaluation/validators.py` + `harness.py`, `debug/replay_trace.py`
+2. **API**: `/agent/spec`, `/agent/impact_map`, `/agent/select_recipe`；`next_step`/`evaluate_step` 扩展 harness 字段（queue、abstract_step、validator_results）
+3. **Graph**: `plan_next_step_node` 队列耗尽 finish；`evaluate_step_node` 校验通过后 harness 推进 abstract step
+4. **FreeCAD**: `agent_runner.start_harness()` spec→impact→recipe→start_plan；evaluate 响应同步 queue/step
+5. **测试**: `test_v08_harness.py` 12 项（spec/impact/recipe/next/evaluate/advance/replay API 流）
+
+**设计**: Recipe 只含 abstract_steps，不含 tool sequence；每步 next 最多 3 个 tool_calls；deterministic validators 优先于 LLM finish 判断。
+
+**UX**: Spec/Recipe 未匹配时 `start_harness` 自动回退 V0.7 LLM `start_plan`；404 提示旧版 Agent Service；按钮文案说明 Harness→LLM 双路径。
+
+## 2026-05-30: V0.8.7 空间感知 + 路由统一
+
+**问题**: LLM 回退路径建模缺 3D 空间感知，对象坐标靠臆造，多体模型（汽车）无法装配。根因: `_build_document_context` 只喂 name/type，丢弃了已采集的 bbox/placement。
+
+**改动**:
+1. `llm_provider._build_document_context`: 注入每对象 center/size/pos/rot/volume/visible + 空间定位规则（基于已有对象坐标计算，禁止臆造；create_cylinder 默认轴 Z，水平需绕 X 转 90°）。next_step/evaluate 双 prompt 同时受益。
+2. `planner.is_harness_session()`: 单一谓词统一 Harness-vs-LLM 路由（需 cad_spec + 非空 queue）；`nodes.py` plan_next_step/evaluate_step 改用它，消除散落条件。
+3. 测试 12→14（harness session 谓词 + LLM 回退路由）。
+4. `development_plan.md` 新增 V0.8.7（1+2 已完成，3 validators 回退路径 / 4 朝向装配约束 待做）。
+
+**架构差异结论**: V0.8 期望"复杂建模走可控轨道"，实际 6 个 recipe 仅覆盖单 primitive/单特征，复杂任务必走 LLM 回退；Spec 为规则非 LLM；validators/impact_map 在回退路径未生效。详见 V0.8.7 与下方 review。
+
+## 2026-05-30: V0.8 架构统一（Spec LLM + 单轨 queue + 全局 validators）
+
+**改动**:
+1. **Spec LLM**: `generate_cad_spec_with_llm` 优先；规则 `_generate_cad_spec_with_rules` 作 API 不可用回退；Harness 不再 Spec 失败就 skip
+2. **统一控制**: `build_queue_from_phases` 将 start_plan phases → abstract_step 队列（step_type=llm_phase）；`plan_next_step` 对 llm_phase 调 LLM、对 recipe step 调确定性 tool_calls
+3. **全局 validators**: `resolve_validator_names` + evaluate 全路径跑 validators；queue 推进不再依赖 cad_spec
+4. **Server 权威**: start_plan/evaluate 响应带 queue/step；FreeCAD `_sync_session_from_evaluate` 纯同步，删 `_advance_abstract_step_if_validated`
+5. **测试**: 19 项（LLM spec mock、queue 统一、llm_phase next_step、全局 validators）
+
+**流程**: Spec(LLM) → Impact → Recipe(可选) → start_plan(queue) → next/evaluate(统一 abstract step 推进)
+
+## 2026-05-30: 修复 robot 误匹配 recipe + fillet 死循环
+
+**问题**: robot 误选 `box_with_fillet_recipe`(2步) 覆盖 5 phase LLM 队列；fillet target=`Torso, Head, Base` 整串当对象名；skip 不推进 AS2 死循环。
+
+**改动**: `select_recipe` 复杂 model_type 返回 llm_fallback；`should_use_recipe_queue` 阶段多于 recipe 时用 LLM 队列；`_resolve_target_name` 解析逗号 target；skip 连续失败时 server 推进 abstract step。测试 23 项。
+
 ## 2026-05-29: V0.7 闭环建模 Agent
 
 **目标**: 从 Plan-as-Script 升级为 Observe-Plan-Act-Evaluate 闭环控制。
@@ -141,3 +185,29 @@
 - ✓ 8个单元测试全部通过（校验正确plan、错误工具名、缺少参数、类型错误、路由逻辑）
 - ✓ API 端点测试通过（POST /agent/plan 返回 LLM 生成的 plan）
 - ✓ 完整 graph 执行测试通过（从输入到最终状态的全链路）
+
+## 2026-05-31: 去掉 Spec 前置，纯 Plan 闭环 + 全步 LLM 调试
+
+**目标**: 取消 FreeCAD 执行链中的 spec/impact/recipe；全局 plan 后 Cursor 式逐步推进；调试记录每步 LLM 输入/输出。
+
+**改动**:
+1. **FreeCAD**: `panel`/`agent_runner` 直接 `start_plan`，删除 harness 四段式前置
+2. **start_plan**: 始终从 phases 构建 abstract step queue，不再走 recipe 分支
+3. **next_step**: 统一 LLM 生成 tool_calls（移除 cad_spec 确定性分支）
+4. **evaluate_step**: 每步必调 LLM（附带确定性校验/validator 结果）；成功且 `phase_status=completed` 时推进 queue
+5. **高层 plan prompt**: 只输出意图级阶段，禁止预先展开尺寸/工具
+
+**调试**: 单 session 目录下 `001_start_plan`、`00N_next_step_*`、`00N_evaluate_step_*` 均含 `llm_01_*.md`（evaluate 成功路径亦有）。
+
+## 2026-05-31: 空间定位最小修复（车轮朝向 + 贴附 + bbox）
+
+**问题**: `set_placement` 把 rot 当 YPR 导致 rot_x=90 车轮仍竖直；bbox 用局部 BoundBox 与旋转不一致；车灯只贴 x 未对齐 y/z；validator 成功仍报 not found。
+
+**改动**:
+1. **FreeCAD**: `_helpers.apply_axis_rotation` + `set_placement`/`create_cylinder(rot_*)` 绕轴旋转；`document_state` 改 `getBoundBox()` 世界坐标，过滤 Origin/Axis 噪声
+2. **LLM**: `_build_document_context` 输出 x/y/z 范围 + 贴面/车轮/pos 角点规则
+3. **validators**: `verify_object_exists` 成功 message 修正；**trace**: `open_existing` 不再覆盖 session_summary
+
+## 2026-05-31: development_plan 关键时刻 + Pull 链路 rationale
+
+**改动**: Version Roadmap 增「关键时刻/版本依赖链/设计原则(Codex+SW 对照)」；V0.8–V0.11 各节补「为什么」与上下游；8.3 明确 Push→Pull query-before-act；exit criteria 阻塞 V0.9；修复文档转义损坏。

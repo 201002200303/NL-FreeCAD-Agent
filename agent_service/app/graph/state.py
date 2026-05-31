@@ -28,3 +28,11 @@ class AgentState(TypedDict):
     last_tool_call: Optional[dict]
     execution_result: Optional[dict]
     evaluate_result: Optional[dict]
+
+    # V0.8: CAD Harness fields
+    cad_spec: Optional[dict]
+    impact_map: Optional[dict]
+    current_recipe: Optional[dict]
+    abstract_step_queue: Optional[dict]
+    current_abstract_step: Optional[dict]
+    before_state: Optional[DocumentState]

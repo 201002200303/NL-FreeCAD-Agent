@@ -22,6 +22,16 @@ from app.llm.planner import (
     evaluate_step_result,
 )
 from app.tools.tool_specs import TOOL_SPECS
+from app.abstract_steps.planner import (
+    resolve_current_abstract_step,
+    is_queue_exhausted,
+    build_queue_from_high_level_plan,
+)
+from app.evaluation.harness import (
+    apply_abstract_step_advancement,
+    should_advance_abstract_step,
+    resolve_validator_names,
+)
 
 
 def _sanitize_tool_calls(calls: list | None, prefix: str = "repair") -> list[dict]:
@@ -228,9 +238,15 @@ def generate_high_level_plan_node(state: AgentState) -> dict:
             "error_message": result.get("message", "生成高层计划失败"),
         }
 
+    if result.get("status") == "ok" and result.get("phases"):
+        queue = build_queue_from_high_level_plan(result)
+        result["abstract_step_queue"] = queue.model_dump(mode="json")
+        result["recipe_id"] = queue.recipe_id
+
     return {
         "high_level_plan": result,
         "phases": result.get("phases", []),
+        "abstract_step_queue": result.get("abstract_step_queue"),
         "status": "high_level_planned",
     }
 
@@ -282,7 +298,7 @@ def validate_high_level_plan_node(state: AgentState) -> dict:
 
 
 def plan_next_step_node(state: AgentState) -> dict:
-    """Generate next tool calls based on current state and history."""
+    """Generate next tool calls based on current state, plan queue, and history."""
     session_id = state.get("session_id", "default")
     user_input = state["user_input"]
     high_level_plan = state.get("high_level_plan", {})
@@ -290,11 +306,17 @@ def plan_next_step_node(state: AgentState) -> dict:
     document_state = state.get("document_state")
     execution_history = state.get("execution_history", {})
     name_map = state.get("name_map", {})
+    abstract_step_queue = state.get("abstract_step_queue")
+    current_abstract_step = state.get("current_abstract_step") or resolve_current_abstract_step(
+        abstract_step_queue
+    )
 
     if not current_phase_id:
         phases = high_level_plan.get("phases", [])
         if phases:
             current_phase_id = phases[0]["phase_id"]
+        elif current_abstract_step:
+            current_phase_id = current_abstract_step.get("step_id")
         else:
             return {
                 "next_step_result": {
@@ -304,19 +326,40 @@ def plan_next_step_node(state: AgentState) -> dict:
                 "status": "finished",
             }
 
+    if abstract_step_queue and is_queue_exhausted(abstract_step_queue):
+        return {
+            "next_step_result": {
+                "decision": "finish",
+                "phase_id": current_phase_id,
+                "tool_calls": [],
+                "message": "计划阶段已全部完成",
+            },
+            "current_phase_id": current_phase_id,
+            "status": "next_step_planned",
+        }
+
+    phase_id = (
+        current_abstract_step.get("step_id")
+        if current_abstract_step
+        else current_phase_id
+    )
     result = generate_next_tool_calls(
         session_id=session_id,
         user_input=user_input,
         high_level_plan=high_level_plan,
-        current_phase_id=current_phase_id,
+        current_phase_id=phase_id,
         document_state=document_state,
         execution_history=execution_history,
         name_map=name_map,
     )
+    if current_abstract_step:
+        result["abstract_step_id"] = current_abstract_step.get("step_id")
+        result["current_abstract_step"] = current_abstract_step
+        result["recipe_id"] = (abstract_step_queue or {}).get("recipe_id")
 
     return {
         "next_step_result": result,
-        "current_phase_id": current_phase_id,
+        "current_phase_id": phase_id,
         "status": "next_step_planned",
     }
 
@@ -366,7 +409,7 @@ def validate_next_step_node(state: AgentState) -> dict:
 
 
 def evaluate_step_node(state: AgentState) -> dict:
-    """Evaluate execution result and determine next action."""
+    """Evaluate execution result via LLM (always), with deterministic checks as context."""
     from app.evaluation.rules import run_deterministic_checks
     from app.evaluation.phases import normalize_evaluate_decision
 
@@ -377,58 +420,85 @@ def evaluate_step_node(state: AgentState) -> dict:
     execution_history = state.get("execution_history", {})
     high_level_plan = state.get("high_level_plan")
     current_phase_id = state.get("current_phase_id")
+    before_state = state.get("before_state")
+    current_recipe = state.get("current_recipe") or {}
+    current_abstract_step = state.get("current_abstract_step") or {}
+    abstract_step_queue = state.get("abstract_step_queue")
 
     det_result = run_deterministic_checks(
         last_tool_call=last_tool_call,
         execution_result=execution_result,
         document_state=document_state,
     )
+    validator_names = resolve_validator_names(current_abstract_step, current_recipe)
+    from app.evaluation.validators import run_geometry_validators
 
+    validator_results = run_geometry_validators(
+        validator_names,
+        before_state=before_state,
+        after_state=document_state,
+        tool_call=last_tool_call,
+        execution_result=execution_result,
+    )
+    failed_validator_messages = [
+        f"{item['validator']}:{item['error_code']}"
+        for item in validator_results
+        if not item.get("passed")
+    ]
+    if failed_validator_messages and det_result["passed"]:
+        det_result = {
+            "passed": False,
+            "issues": failed_validator_messages,
+            "suggested_decision": "repair",
+        }
+
+    result = evaluate_step_result(
+        session_id=session_id,
+        last_tool_call=last_tool_call,
+        execution_result=execution_result,
+        document_state=document_state,
+        execution_history=execution_history,
+        high_level_plan=high_level_plan,
+        current_phase_id=current_phase_id,
+        deterministic_checks=det_result,
+        validator_results=validator_results,
+        current_abstract_step=current_abstract_step or None,
+    )
+    if result.get("repair_tool_calls"):
+        result["repair_tool_calls"] = _sanitize_tool_calls(result["repair_tool_calls"])
+    result.setdefault("validator_results", validator_results)
+    result.setdefault("postcondition_results", validator_results)
     if not det_result["passed"]:
-        suggested = det_result.get("suggested_decision", "repair")
-        recent = execution_history.get("recent", [])
-        fail_count = sum(1 for e in recent[-3:] if e.get("status") == "error")
+        result.setdefault("deterministic_issues", det_result.get("issues", []))
 
-        if fail_count >= 2 and suggested == "repair":
-            result = {
-                "decision": "skip_and_continue",
-                "phase_status": "in_progress",
-                "message": f"连续失败，跳过: {'; '.join(det_result['issues'])}",
-                "deterministic_issues": det_result["issues"],
-            }
-        else:
-            result = {
-                "decision": suggested,
-                "phase_status": "in_progress",
-                "message": "; ".join(det_result["issues"]),
-                "deterministic_issues": det_result["issues"],
-            }
-            if suggested == "repair":
-                llm_result = evaluate_step_result(
-                    session_id=session_id,
-                    last_tool_call=last_tool_call,
-                    execution_result=execution_result,
-                    document_state=document_state,
-                    execution_history=execution_history,
-                    high_level_plan=high_level_plan,
-                    current_phase_id=current_phase_id,
-                )
-                result["repair_tool_calls"] = _sanitize_tool_calls(
-                    llm_result.get("repair_tool_calls", [])
-                )
-                if llm_result.get("message"):
-                    result["message"] = llm_result["message"]
-    else:
-        result = evaluate_step_result(
-            session_id=session_id,
-            last_tool_call=last_tool_call,
-            execution_result=execution_result,
-            document_state=document_state,
-            execution_history=execution_history,
-            high_level_plan=high_level_plan,
-            current_phase_id=current_phase_id,
+    if (
+        abstract_step_queue
+        and current_abstract_step
+        and det_result["passed"]
+        and should_advance_abstract_step(
+            execution_passed=True,
+            validator_results=validator_results,
         )
-        result.setdefault("deterministic_issues", [])
+        and result.get("phase_status") == "completed"
+    ):
+        advancement = apply_abstract_step_advancement(
+            abstract_step_queue,
+            current_abstract_step["step_id"],
+        )
+        result["abstract_step_queue"] = advancement["abstract_step_queue"]
+        result["current_abstract_step"] = advancement["current_abstract_step"]
+        result["abstract_step_completed"] = advancement["queue_completed"]
+        if advancement.get("updated_current_phase_id"):
+            result["updated_current_phase_id"] = advancement["updated_current_phase_id"]
+        if advancement["queue_completed"]:
+            result["decision"] = "finish"
+            result["phase_status"] = "completed"
+            result["message"] = result.get("message") or "All plan phases completed."
+
+    if result.get("current_abstract_step") and result.get("decision") not in {"finish", "abort"}:
+        if result.get("phase_status") != "completed":
+            result["decision"] = "continue"
+            result["phase_status"] = "in_progress"
 
     result = normalize_evaluate_decision(result, high_level_plan, current_phase_id)
 
@@ -436,8 +506,11 @@ def evaluate_step_node(state: AgentState) -> dict:
     updates = {
         "evaluate_result": result,
         "status": "evaluated",
+        "abstract_step_queue": result.get("abstract_step_queue", abstract_step_queue),
     }
     if new_phase_id:
         updates["current_phase_id"] = new_phase_id
+    if "current_abstract_step" in result:
+        updates["current_abstract_step"] = result.get("current_abstract_step")
 
     return updates

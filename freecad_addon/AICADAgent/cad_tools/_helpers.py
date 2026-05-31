@@ -28,9 +28,24 @@ def get_shape(obj):
     return shape
 
 
-def apply_placement(obj, pos_x=0, pos_y=0, pos_z=0):
+def apply_axis_rotation(rot_x=0, rot_y=0, rot_z=0):
+    """Compose rotations around fixed X/Y/Z axes (degrees), not yaw-pitch-roll."""
+    rot = FreeCAD.Rotation()
+    for axis, angle in (
+        (FreeCAD.Vector(1, 0, 0), rot_x),
+        (FreeCAD.Vector(0, 1, 0), rot_y),
+        (FreeCAD.Vector(0, 0, 1), rot_z),
+    ):
+        if angle:
+            rot = rot * FreeCAD.Rotation(axis, float(angle))
+    return rot
+
+
+def apply_placement(obj, pos_x=0, pos_y=0, pos_z=0, rot_x=0, rot_y=0, rot_z=0):
     if pos_x != 0 or pos_y != 0 or pos_z != 0:
         obj.Placement.Base = FreeCAD.Vector(float(pos_x), float(pos_y), float(pos_z))
+    if rot_x != 0 or rot_y != 0 or rot_z != 0:
+        obj.Placement.Rotation = apply_axis_rotation(rot_x, rot_y, rot_z)
 
 
 def assign_shape_result(doc, target_name: str, new_shape, result_name=None):

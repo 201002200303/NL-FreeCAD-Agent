@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from openai import OpenAI
 
 from app.tools.tool_specs import TOOL_SPECS
 from app.tools.tool_registry import build_tools_description, get_tools_by_categories
@@ -36,27 +35,83 @@ def _build_tools_description(tool_specs: dict | None = None) -> str:
     return build_tools_description(tool_specs or TOOL_SPECS)
 
 
+def _fmt_vec(vec, ndigits: int = 1) -> str:
+    """Format a 3D vector list as a compact string."""
+    if not vec:
+        return "?"
+    try:
+        return "[" + ", ".join(f"{float(v):.{ndigits}f}" for v in vec) + "]"
+    except (TypeError, ValueError):
+        return str(vec)
+
+
+def _fmt_range(lo, hi, ndigits: int = 1) -> str:
+    try:
+        return f"[{float(lo):.{ndigits}f}, {float(hi):.{ndigits}f}]"
+    except (TypeError, ValueError):
+        return "?"
+
+
 def _build_document_context(document_state: Optional[DocumentState]) -> str:
-    """Build a text summary of the current document state for the LLM."""
+    """Build a text summary of the current document state for the LLM.
+
+    Includes real geometry feedback (bbox center/size, placement, visibility)
+    so the LLM can reason about 3D positions instead of guessing coordinates.
+    """
     if not document_state or not document_state.objects:
         return ""
 
-    lines = ["## 当前文档状态\n"]
+    lines = ["## 当前文档状态（含真实几何反馈）\n"]
     lines.append(f"文档名称: {document_state.document_name}")
+    lines.append(
+        "坐标说明：x/y/z=世界坐标包围盒范围[min,max]；center/size 由该范围导出；"
+        "pos=Placement 基点（Part::Box 为角点 xmin,ymin,zmin；Cylinder 为底面圆心）。单位 mm。"
+    )
 
     if document_state.objects:
         lines.append(f"文档中已有 {len(document_state.objects)} 个对象:")
         for obj in document_state.objects:
+            parts = [f"`{obj.name}` (类型: {obj.type})"]
+
+            if obj.bbox:
+                parts.append(f"x={_fmt_range(obj.bbox.xmin, obj.bbox.xmax)}")
+                parts.append(f"y={_fmt_range(obj.bbox.ymin, obj.bbox.ymax)}")
+                parts.append(f"z={_fmt_range(obj.bbox.zmin, obj.bbox.zmax)}")
+                parts.append(f"size={_fmt_vec(obj.bbox.size)}")
+            if obj.placement and obj.placement.base:
+                parts.append(f"pos={_fmt_vec(obj.placement.base)}")
+                if obj.placement.rotation_euler and any(
+                    abs(a) > 1e-6 for a in obj.placement.rotation_euler
+                ):
+                    parts.append(f"rot_euler={_fmt_vec(obj.placement.rotation_euler)}")
+            if obj.topology and obj.topology.volume is not None:
+                parts.append(f"volume={obj.topology.volume:.1f}")
+            if not obj.visible:
+                parts.append("已隐藏")
+
             props_str = ""
             if obj.properties:
                 prop_items = [f"{k}={v}" for k, v in obj.properties.items()]
                 props_str = f"，属性: {', '.join(prop_items)}"
-            lines.append(f"  - `{obj.name}` (类型: {obj.type}){props_str}")
+
+            lines.append(f"  - " + "，".join(parts) + props_str)
 
     if document_state.selected_objects:
         lines.append(f"当前选中: {', '.join(f'`{s}`' for s in document_state.selected_objects)}")
 
-    lines.append("\n请在计划中引用已有对象的名称，修改操作使用 target 字段指向已有对象。")
+    lines.append(
+        "\n## 空间定位规则（重要）\n"
+        "1. 必须基于上方已有对象的 x/y/z 范围计算坐标，禁止凭空臆造绝对坐标。\n"
+        "2. Part::Box：pos 是包围盒最小角 (xmin,ymin,zmin)；Length/Width/Height 沿 X/Y/Z。\n"
+        "3. 贴附外表面（消除空隙）：贴 +X 面 pos_x=目标.xmax；贴 -X 面 pos_x=目标.xmin-自身.Length；"
+        "贴 +Y/-Y/+Z/-Z 同理用 ymax/ymin/zmax/zmin。y/z 也要对齐，避免只贴 x 却悬空。\n"
+        "4. 例：车灯贴车头 Body +X 端面 → pos_x=Body.xmax，pos_y/pos_z 与 Body 该端面 y/z 范围对齐。\n"
+        "5. create_cylinder 默认轴沿 Z。水平车轮（轴沿 Y）：create_cylinder 传 rot_x=90，"
+        "或 create_cylinder + set_placement(rot_x=90)。成功后 size 应约为 [2R, H, 2R]。\n"
+        "6. set_placement 的 rot_x/y/z 是绕固定 X/Y/Z 轴旋转（度），不是欧拉 YPR。\n"
+        "7. 引用已有对象用其名称；修改操作用 target 字段指向已有对象。\n"
+        "8. 每步后会回传新的世界坐标 bbox，请核对实际落点再继续。"
+    )
     return "\n".join(lines)
 
 
@@ -196,6 +251,8 @@ def call_llm(user_input: str, system_prompt: str) -> Optional[dict]:
     llm_label = trace.next_llm_label() if trace and step_name else ""
 
     try:
+        from openai import OpenAI
+
         client = OpenAI(api_key=api_key, base_url=base_url)
 
         response = client.chat.completions.create(
@@ -256,6 +313,99 @@ def call_llm(user_input: str, system_prompt: str) -> Optional[dict]:
         return None
 
 
+def _build_cad_spec_prompt() -> str:
+    return """你是一个 CAD 需求分析助手，负责将自然语言建模需求转成结构化 CAD Spec。
+
+## 你的任务
+1. 理解用户想建什么（包括开放需求如汽车、家具、机械件）
+2. 输出结构化 features 列表，描述「要做什么」而非「怎么建」
+3. 缺少尺寸时使用合理工程默认值，写入 assumptions
+4. **禁止**输出 tool calls、FreeCAD 命令或具体对象名
+
+## 输出 JSON 格式
+
+```json
+{
+  "status": "ok" 或 "need_more_info",
+  "user_input": "原始输入",
+  "cad_spec": {
+    "model_type": "car / box / lamp / shaft / generic 等",
+    "unit": "mm",
+    "coordinate_system": "XYZ",
+    "features": [
+      {
+        "type": "body / box / cylinder / wheel / fillet / hole / chamfer 等",
+        "name_hint": "语义名称如 Body / Wheel_FL",
+        "dimensions": {"length": 100, "width": 60, "height": 20},
+        "position": "relative hint 如 on_chassis_corner",
+        "target_hint": "selected_or_primary_solid 或 null",
+        "parameters": {}
+      }
+    ],
+    "dimensions": {},
+    "unknowns": [],
+    "assumptions": ["未指定尺寸时的默认假设"]
+  },
+  "question": "status=need_more_info 时提问"
+}
+```
+
+## 规则
+- features 至少 1 项；开放模型（汽车）拆成 body、wheel、cabin 等语义 feature
+- dimensions 缺省时给出合理 mm 默认值
+- 无法理解的输入才返回 need_more_info
+"""
+
+
+def generate_cad_spec_with_llm(user_input: str):
+    """Generate CAD Spec via LLM. Returns None when LLM unavailable."""
+    from app.cad_spec.schemas import CADFeature, CADSpec, SpecGenerationResult
+
+    result = call_llm(user_input, _build_cad_spec_prompt())
+    if result is None:
+        return None
+
+    status = result.get("status", "ok")
+    if status == "need_more_info":
+        return SpecGenerationResult(
+            status="need_more_info",
+            user_input=user_input,
+            question=result.get("question") or result.get("message"),
+            cad_spec=CADSpec(
+                model_type="generic",
+                features=[],
+                unknowns=["model_type"],
+            ),
+        )
+
+    raw_spec = result.get("cad_spec")
+    if not isinstance(raw_spec, dict):
+        print("[LLM Provider] cad_spec 字段缺失或无效")
+        return None
+
+    try:
+        features = [CADFeature(**item) for item in raw_spec.get("features", [])]
+        if not features:
+            return None
+        cad_spec = CADSpec(
+            model_type=raw_spec.get("model_type", "generic"),
+            unit=raw_spec.get("unit", "mm"),
+            coordinate_system=raw_spec.get("coordinate_system", "XYZ"),
+            features=features,
+            dimensions=raw_spec.get("dimensions") or {},
+            unknowns=raw_spec.get("unknowns") or [],
+            assumptions=raw_spec.get("assumptions") or [],
+        )
+        return SpecGenerationResult(
+            status="ok",
+            user_input=user_input,
+            cad_spec=cad_spec,
+        )
+    except Exception as exc:
+        print(f"[LLM Provider] CAD Spec 解析失败: {exc}")
+        return None
+
+
 def generate_plan_with_llm(
     user_input: str,
     document_state: Optional[DocumentState] = None,
@@ -302,9 +452,14 @@ def _build_high_level_plan_prompt(document_state: Optional[DocumentState] = None
 
 ## 你的任务
 1. 理解用户的建模需求
-2. 将建模任务分解为若干个逻辑阶段（phase）
-3. 为每个阶段定义目标和成功标准
-4. **不要**生成具体的工具调用或参数
+2. 将建模任务分解为若干个逻辑阶段（phase），类似 Cursor 的任务清单
+3. 每个阶段只描述**意图与成功标准**，不要写具体工具、参数或尺寸
+4. 具体尺寸、坐标、工具选择留给后续逐步执行（会读取实时文档状态）
+
+## 重要约束
+- **禁止**输出 tool calls、FreeCAD 命令、对象名、具体 mm 数值
+- 阶段划分按建模逻辑顺序（先主体后细节）
+- 开放模型（汽车、家具等）拆成 3~6 个可独立验证的阶段即可
 {doc_section}
 
 ## 输出格式要求
@@ -320,14 +475,14 @@ def _build_high_level_plan_prompt(document_state: Optional[DocumentState] = None
     {{
       "phase_id": "P1",
       "title": "阶段标题",
-      "intent": "这个阶段要做什么",
+      "intent": "这个阶段要做什么（意图级，不含尺寸）",
       "success_criteria": [
-        "成功标准1",
-        "成功标准2"
+        "可验证的成功标准1",
+        "可验证的成功标准2"
       ]
     }}
   ],
-  "assumptions": ["假设1", "假设2"],
+  "assumptions": ["仅记录用户已明确或必须说明的假设"],
   "question": "如果需要更多信息，提出问题（可选）"
 }}
 ```
@@ -723,6 +878,10 @@ def evaluate_step_with_llm(
     execution_history: dict,
     high_level_plan: dict | None = None,
     current_phase_id: str | None = None,
+    *,
+    deterministic_checks: dict | None = None,
+    validator_results: list[dict] | None = None,
+    current_abstract_step: dict | None = None,
 ) -> dict:
     """
     使用 LLM 评估步骤执行结果。
@@ -731,8 +890,30 @@ def evaluate_step_with_llm(
     """
     system_prompt = _build_evaluate_prompt(high_level_plan, current_phase_id)
 
-    # 构建用户消息
     doc_context = _build_document_context(document_state)
+    checks_section = ""
+    if deterministic_checks is not None:
+        checks_section += f"""## 确定性检查结果
+```json
+{json.dumps(deterministic_checks, ensure_ascii=False, indent=2)}
+```
+
+"""
+    if validator_results is not None:
+        checks_section += f"""## 几何校验结果
+```json
+{json.dumps(validator_results, ensure_ascii=False, indent=2)}
+```
+
+"""
+    step_section = ""
+    if current_abstract_step:
+        step_section = f"""## 当前计划阶段
+```json
+{json.dumps(current_abstract_step, ensure_ascii=False, indent=2)}
+```
+
+"""
 
     user_message = f"""## 最后执行的工具调用
 ```json
@@ -744,19 +925,23 @@ def evaluate_step_with_llm(
 {json.dumps(execution_result, ensure_ascii=False, indent=2)}
 ```
 
-{doc_context}
+{checks_section}{step_section}{doc_context}
 
-请评估执行结果并决定下一步动作。
+请结合上述检查结果与文档状态，评估执行结果并决定下一步动作。
 """
 
     result = call_llm(user_message, system_prompt)
 
     if result is None:
-        # 默认继续
+        checks_passed = (deterministic_checks or {}).get("passed", True)
+        validators_passed = (
+            not validator_results or all(item.get("passed") for item in validator_results)
+        )
         return {
             "decision": "continue",
-            "phase_status": "in_progress",
-            "message": "LLM 调用失败，默认继续",
+            "phase_status": "completed" if checks_passed and validators_passed else "in_progress",
+            "message": "LLM 调用失败，依据校验结果默认继续",
+            "repair_tool_calls": [],
         }
 
     # 验证必需字段

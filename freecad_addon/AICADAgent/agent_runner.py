@@ -25,6 +25,8 @@ class AgentSession:
         self.history = []
         self.name_map = {}
         self.session_id = high_level_plan.get("session_id", "local_session")
+        self.abstract_step_queue = high_level_plan.get("abstract_step_queue")
+        self.current_abstract_step = high_level_plan.get("current_abstract_step")
 
     def update_name_map(self, name_map_update: dict):
         """Update name_map with new mappings from tool execution."""
@@ -118,6 +120,7 @@ class AgentRunner(QtCore.QObject):
         self.debug_mode = is_debug_mode()
         self.debug_session_path: Optional[str] = None
         self.debug_step_name: Optional[str] = None
+        self._before_step_state: Optional[dict] = None
 
     def set_debug_mode(self, enabled: bool):
         self.debug_mode = enabled
@@ -166,8 +169,8 @@ class AgentRunner(QtCore.QObject):
             pass
 
     def start_plan(self, user_input: str):
-        """Start a new modeling session by requesting high-level plan."""
-        self.log_message.emit(f"→ 请求生成高层计划: {user_input[:80]}...")
+        """Start a closed-loop session: global plan → step-by-step execution."""
+        self.log_message.emit(f"→ 生成全局计划: {user_input[:80]}...")
 
         # Get document state
         try:
@@ -194,11 +197,18 @@ class AgentRunner(QtCore.QObject):
             self.error_occurred.emit(f"生成高层计划失败: {result.get('message', '未知错误')}")
             return
 
-        # Create session
+        # Create session — server response is authoritative for harness state
         self.session = AgentSession(
             user_input=result.get("user_input", ""),
             high_level_plan=result,
         )
+        self.session.session_id = result.get("session_id", self.session.session_id)
+        self.session.abstract_step_queue = result.get("abstract_step_queue")
+        self.session.current_abstract_step = result.get("current_abstract_step")
+        if self.session.current_abstract_step:
+            self.session.current_phase_id = self.session.current_abstract_step.get("step_id")
+        elif self.session.phases:
+            self.session.current_phase_id = self.session.phases[0]["phase_id"]
 
         # Initialize executor
         try:
@@ -247,6 +257,8 @@ class AgentRunner(QtCore.QObject):
             "document_state": doc_state,
             "execution_history": history_summary,
             "name_map": self.session.name_map,
+            "abstract_step_queue": self.session.abstract_step_queue,
+            "current_abstract_step": self.session.current_abstract_step,
         })
 
         # Make HTTP request
@@ -286,6 +298,8 @@ class AgentRunner(QtCore.QObject):
             self.log_message.emit(f"⚠ 未知决策类型: {decision}")
             return
 
+        self.session.current_abstract_step = result.get("current_abstract_step") or self.session.current_abstract_step
+
         # Execute tool calls
         tool_calls = result.get("tool_calls", [])
         if not tool_calls:
@@ -293,6 +307,8 @@ class AgentRunner(QtCore.QObject):
             return
 
         self.log_message.emit(f"→ 执行 {len(tool_calls)} 个工具调用...")
+
+        self._before_step_state = get_document_state()
 
         # Execute each tool call
         for tool_call in tool_calls:
@@ -367,10 +383,13 @@ class AgentRunner(QtCore.QObject):
                 "tool": last_entry.get("tool"),
             },
             "execution_result": last_entry,
+            "before_state": self._before_step_state,
             "document_state": doc_state_after,
             "execution_history": self.session.get_history_summary(),
             "high_level_plan": self.session.high_level_plan,
             "current_phase_id": self.session.current_phase_id,
+            "current_abstract_step": self.session.current_abstract_step,
+            "abstract_step_queue": self.session.abstract_step_queue,
         })
 
         # Make HTTP request
@@ -386,14 +405,7 @@ class AgentRunner(QtCore.QObject):
         phase_status = result.get("phase_status", "")
 
         if decision == "continue":
-            # Check if phase changed
-            new_phase_id = result.get("updated_current_phase_id")
-            if new_phase_id and new_phase_id != self.session.current_phase_id:
-                self.session.current_phase_id = new_phase_id
-                self.log_message.emit(f"→ 进入下一阶段: {new_phase_id}")
-                self.phase_changed.emit(new_phase_id)
-
-            # Continue to next step
+            self._sync_session_from_evaluate(result)
             if self.auto_mode and not self.paused and not self.stopped:
                 # Use QTimer to schedule next step (avoid deep recursion)
                 QtCore.QTimer.singleShot(100, self.execute_next_step)
@@ -424,6 +436,7 @@ class AgentRunner(QtCore.QObject):
                 QtCore.QTimer.singleShot(100, self.execute_next_step)
 
         elif decision == "skip_and_continue":
+            self._sync_session_from_evaluate(result)
             self.log_message.emit(f"⚠ 跳过当前步骤: {result.get('message', '')}")
             if self.auto_mode and not self.paused and not self.stopped:
                 QtCore.QTimer.singleShot(100, self.execute_next_step)
@@ -444,11 +457,47 @@ class AgentRunner(QtCore.QObject):
         else:
             self.log_message.emit(f"⚠ 未知评估决策: {decision}")
 
+    def _current_queue_step(self, queue: Optional[dict]) -> Optional[dict]:
+        if not queue:
+            return None
+        current_id = queue.get("current_step_id")
+        steps = queue.get("steps", [])
+        if current_id:
+            for step in steps:
+                if step.get("step_id") == current_id:
+                    return step
+        return steps[0] if steps else None
+
+    def _sync_session_from_evaluate(self, result: dict):
+        """Sync session state from server evaluate response (single source of truth)."""
+        if not self.session:
+            return
+        if result.get("abstract_step_queue") is not None:
+            self.session.abstract_step_queue = result["abstract_step_queue"]
+        if "current_abstract_step" in result:
+            self.session.current_abstract_step = result.get("current_abstract_step")
+        phase_id = result.get("updated_current_phase_id")
+        if not phase_id and self.session.current_abstract_step:
+            phase_id = self.session.current_abstract_step.get("step_id")
+        if phase_id and phase_id != self.session.current_phase_id:
+            self.session.current_phase_id = phase_id
+            self.log_message.emit(f"→ 进入下一阶段: {phase_id}")
+            self.phase_changed.emit(phase_id)
+
     def _on_request_failed(self, error_msg: str):
         """Handle HTTP request failure."""
         self.error_occurred.emit(f"HTTP 请求失败: {error_msg}")
-        self.log_message.emit(f"✗ 无法连接到 Agent 服务: {error_msg}")
-        self.log_message.emit("请确保 Agent 服务已启动: uvicorn app.main:app --host 127.0.0.1 --port 8765")
+        if "404" in error_msg:
+            self.log_message.emit(
+                "✗ Agent 服务不可用或版本过旧。"
+                "请从 NL-FreeCAD-Agent\\agent_service 启动: "
+                ".venv\\Scripts\\uvicorn app.main:app --host 127.0.0.1 --port 8765 --reload"
+            )
+        else:
+            self.log_message.emit(f"✗ 无法连接到 Agent 服务: {error_msg}")
+            self.log_message.emit(
+                "请确保 Agent 服务已启动: uvicorn app.main:app --host 127.0.0.1 --port 8765"
+            )
 
     def run_auto(self):
         """Start auto execution mode."""

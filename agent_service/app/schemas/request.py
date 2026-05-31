@@ -1,6 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import Any, Optional
 from app.schemas.cad_state import DocumentState
+from app.cad_spec.schemas import CADSpec
 
 
 class PlanRequest(BaseModel):
@@ -19,6 +20,10 @@ class StartPlanRequest(BaseModel):
         default=None, description="Current FreeCAD document state"
     )
     debug_mode: bool = Field(default=False, description="Enable LLM trace logging")
+    cad_spec: Optional[CADSpec] = Field(default=None)
+    impact_map: Optional[dict] = Field(default=None)
+    current_recipe: Optional[dict] = Field(default=None)
+    abstract_step_queue: Optional[dict] = Field(default=None)
 
 
 class NextStepRequest(BaseModel):
@@ -29,6 +34,11 @@ class NextStepRequest(BaseModel):
     document_state: Optional[DocumentState] = Field(default=None)
     execution_history: dict = Field(default_factory=dict)
     name_map: dict[str, str] = Field(default_factory=dict)
+    cad_spec: Optional[CADSpec] = Field(default=None)
+    impact_map: Optional[dict] = Field(default=None)
+    current_recipe: Optional[dict] = Field(default=None)
+    abstract_step_queue: Optional[dict] = Field(default=None)
+    current_abstract_step: Optional[dict] = Field(default=None)
     debug_mode: bool = Field(default=False, description="Enable LLM trace logging")
 
 
@@ -40,7 +50,30 @@ class EvaluateStepRequest(BaseModel):
     execution_history: dict = Field(default_factory=dict)
     high_level_plan: dict = Field(default_factory=dict)
     current_phase_id: Optional[str] = Field(default=None)
+    cad_spec: Optional[CADSpec] = Field(default=None)
+    impact_map: Optional[dict] = Field(default=None)
+    current_recipe: Optional[dict] = Field(default=None)
+    current_abstract_step: Optional[dict] = Field(default=None)
+    abstract_step_queue: Optional[dict] = Field(default=None)
+    before_state: Optional[DocumentState] = Field(default=None)
     debug_mode: bool = Field(default=False, description="Enable LLM trace logging")
+
+
+class SpecRequest(BaseModel):
+    user_input: str = Field(..., description="Natural language modeling request")
+    debug_mode: bool = Field(default=False)
+
+
+class ImpactMapRequest(BaseModel):
+    cad_spec: CADSpec
+    document_state: Optional[DocumentState] = Field(default=None)
+    debug_mode: bool = Field(default=False)
+
+
+class SelectRecipeRequest(BaseModel):
+    cad_spec: CADSpec
+    impact_map: dict = Field(default_factory=dict)
+    debug_mode: bool = Field(default=False)
 
 
 class LogExecutionRequest(BaseModel):

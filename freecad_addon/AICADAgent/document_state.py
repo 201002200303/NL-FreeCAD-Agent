@@ -2,6 +2,10 @@
 
 import FreeCAD
 
+_SKIP_TYPE_IDS = frozenset({
+    "App::Origin", "App::Line", "App::Plane", "App::Point",
+})
+
 
 def get_document_state() -> dict:
     """Read the current FreeCAD document state with enhanced geometric info.
@@ -18,8 +22,9 @@ def get_document_state() -> dict:
 
     objects = []
     for obj in doc.Objects:
-        obj_info = _extract_object_state(obj)
-        objects.append(obj_info)
+        if obj.TypeId in _SKIP_TYPE_IDS:
+            continue
+        objects.append(_extract_object_state(obj))
 
     # Get selected objects
     selected = []
@@ -77,9 +82,9 @@ def _has_shape(obj) -> bool:
 
 
 def _extract_bbox(obj) -> dict | None:
-    """Extract bounding box from object's Shape."""
+    """Extract world-space bounding box (includes placement/rotation)."""
     try:
-        bbox = obj.Shape.BoundBox
+        bbox = obj.getBoundBox()
         return {
             "xmin": bbox.XMin,
             "xmax": bbox.XMax,

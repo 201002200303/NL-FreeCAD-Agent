@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from contextlib import contextmanager
 from typing import Any, Iterator
 
@@ -12,6 +13,8 @@ from app.debug.trace_logger import (
     set_current_step_name,
     set_trace_session,
 )
+
+_logger = logging.getLogger(__name__)
 
 
 @contextmanager
@@ -29,15 +32,25 @@ def trace_api_step(
     trace: TraceSession | None = None
     step_name: str | None = None
 
-    if is_debug_enabled(debug_mode):
-        if create_new:
-            trace = TraceSession.start(session_id)
-        else:
-            trace = TraceSession.open_existing(session_id) or TraceSession.start(session_id)
-        set_trace_session(trace)
-        step_name = trace.next_step_name(endpoint, phase_id=phase_id, call_id=call_id)
-        set_current_step_name(step_name)
-        trace.log_api_request(step_name, endpoint, payload, phase_id=phase_id)
+    enabled = is_debug_enabled(debug_mode)
+    _logger.info(
+        "[debug] trace_api_step: endpoint=%s session_id=%s debug_mode=%s enabled=%s create_new=%s",
+        endpoint, session_id, debug_mode, enabled, create_new,
+    )
+
+    if enabled:
+        try:
+            if create_new:
+                trace = TraceSession.start(session_id)
+            else:
+                trace = TraceSession.open_existing(session_id) or TraceSession.start(session_id)
+            set_trace_session(trace)
+            step_name = trace.next_step_name(endpoint, phase_id=phase_id, call_id=call_id)
+            set_current_step_name(step_name)
+            trace.log_api_request(step_name, endpoint, payload, phase_id=phase_id)
+            _logger.info("[debug] trace session created: %s step=%s", trace.path, step_name)
+        except Exception:
+            _logger.exception("[debug] failed to create trace session for %s", endpoint)
 
     try:
         yield trace, step_name
