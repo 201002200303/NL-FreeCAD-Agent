@@ -37,8 +37,8 @@ LLM 本身不是主要瓶颈。真正的瓶颈是：模型现在缺少 CAD 版 c
 | LLM 决策，CAD API 证明 | LLM 可以推理，但几何事实必须来自 CAD 状态、查询工具、validator。 | `next_step` 做决策；query tools 和 validators 提供事实。 |
 | 先检索再规划 | 整体 plan 应参考已验证 pattern，而不是纯靠模型临场发挥。 | 给 `start_plan` 接入轻量 pattern library。 |
 | 先查询再执行 | placement、贴附、选面、选边、布尔、朝向相关操作前应先 query。 | query tools 进入 `TOOL_SPECS` 和 FreeCAD executor。 |
-| 小步执行 | 每一步要窄到能观察、能验证、能局部修复。 | `next_step` 每次返回 1-3 个 tool calls。 |
-| 用数值验收 | object exists 不等于几何合格。gap、orientation、bbox、visibility、topology 都要能验。 | geometry validators + evaluate 质量门。 |
+| 小步可验证 | 每步执行后应能 observe + evaluate；但不限制单步 tool call 数量。 | 四个轮子等同一步批量创建；evaluate 看整步结果。 |
+| 默认轻验证，严格验证可选 | 默认只保证工具跑通、对象存在、shape valid；gap/orientation 等先进入 trace warning。 | geometry validators 保留，strict/debug/golden 模式再强门禁。 |
 | 局部 repair | 失败后用测量差异修正参数，而不是重启整个 plan。 | `measure_gap` / expected-vs-actual repair context。 |
 | 案例是 pattern，不是标准答案 | 样例指导 plan 形状和 repair 策略，但不冻结固定 tool calls。 | 先做 `patterns/`，完整 `cases/` 放后续。 |
 
@@ -110,8 +110,8 @@ V0.8 是可靠性地基：
 2. 只读取当前任务相关的 CAD 状态。
 3. 在空间操作前主动查询缺失几何事实。
 4. 执行小步 CAD actions。
-5. 用 deterministic validators 验收几何。
-6. 用 expected-vs-actual measurement 做局部修复。
+5. 用轻验证保证执行链路不静默失败。
+6. 将 gap/orientation/attachment 等高级几何差异记录到 trace，供 repair/strict/golden 后续使用。
 
 ### V0.8 Exit Criteria
 
@@ -127,13 +127,14 @@ V0.8 只有在以下条件全部满足时才算完成：
   - execution tool call；
   - validator result；
   - repair 或 continue 决策基于测量事实。
-- `evaluate_step` 不能在 required validators 失败时标记成功。
+- 默认轻验证：工具执行成功、对象存在、shape valid。
+- gap/orientation/attachment 默认不阻断流程，但必须进入 validator warning / trace。
 - 旧 `/agent/plan` endpoint 仍可工作。
 - 现有测试通过，并新增 query/validator 测试。
 
 ## 5. V0.8.2 + V0.8.3 联合实施计划
 
-8.2 和 8.3 必须一起推进。只有 query tools 没有质量门，只是多一些 prompt 上下文；只有质量门没有 query tools，Agent 会知道失败但不知道如何智能修复。
+8.2 和 8.3 必须一起推进。当前默认策略是 **轻验证 + trace**：保留 validators，但不让半成熟 gap/orientation 规则阻断主流程。strict/debug/golden 模式后续再启用强门禁。
 
 ### Step 1 - 定义 Query Tool 最小契约
 
@@ -235,20 +236,26 @@ V0.8 只有在以下条件全部满足时才算完成：
 - risky tool 在 `get_object_detail(target)` 之后 -> allowed。
 - 无 target 的 primitive creation -> allowed。
 
-### Step 4 - Geometry Quality Gates
+### Step 4 - 轻验证与可选严格验证
 
-validators 必须和 phase 目标绑定。对象存在只是 baseline。
+validators 必须保留，但默认角色要清晰：轻验证负责保证链路跑通，高级几何验证先作为 warning/trace，不默认卡流程。
 
-第一批质量门：
+默认阻断项：
+
+| Validator | 默认行为 |
+| --- | --- |
+| 工具执行 `success/error` | error 阻断 |
+| `verify_object_exists` | 失败阻断 |
+| `verify_shape_valid` | 失败阻断 |
+
+默认 warning 项：
 
 | Validator | 目的 |
 | --- | --- |
-| `verify_object_exists` | 生成对象存在。 |
-| `verify_shape_valid` | shape/topology 有效。 |
-| `verify_source_hidden` | boolean/feature source object 按预期隐藏。 |
 | `verify_bbox_close` | bbox 接近期望范围。 |
 | `verify_attachment_gap` | 对象间 gap 在阈值内。 |
 | `verify_orientation` | dominant axis 或 cylinder axis 符合期望。 |
+| `verify_source_hidden` | boolean/feature source object 按预期隐藏。 |
 | `verify_visibility_set` | 预期可见对象可见，helper 隐藏。 |
 | `verify_phase_criteria` | phase success criteria 映射到具体 checks。 |
 
@@ -269,7 +276,9 @@ validators 必须和 phase 目标绑定。对象存在只是 baseline。
   - wheel horizontal vs vertical；
   - bbox mismatch；
   - helper/source visibility。
-- required validator 失败时，`evaluate_step` 必须强制 `repair`，不能 `continue`。
+- object exists / shape valid 失败时，`evaluate_step` 必须阻断。
+- gap/orientation/attachment 失败时，默认进入 `deterministic_issues` warning，不阻断推进。
+- strict/debug/golden 模式可将 warning validator 升级为强门禁。
 
 ### Step 5 - Expected-vs-Actual Repair Context
 
@@ -306,7 +315,8 @@ validator failure 应包含：
 校验：
 
 - 错误 placement 能产生 numeric repair hint。
-- validator 失败时，`evaluate_step` 返回 `repair` 而不是 `continue`。
+- 默认模式：warning validator 失败不强制 `repair`。
+- strict/debug/golden 模式：warning validator 可升级为 `repair`。
 
 ### Step 6 - 状态上下文瘦身
 
@@ -583,13 +593,14 @@ metadata：
 - [ ] 必要时返回 `QUERY_REQUIRED`。
 - [ ] 增加 tests。
 
-### Milestone C - Quality Gates
+### Milestone C - 轻验证与 Strict 可选
 
 - [ ] 增加 `verify_attachment_gap`。
 - [ ] 增加 `verify_orientation`。
 - [ ] 增强 validator result payload。
-- [ ] 将 validators 绑定到 abstract steps / pattern criteria。
-- [ ] 确保 failed validator 强制 repair。
+- [ ] 默认只让 execution error / object missing / invalid shape 阻断流程。
+- [ ] gap/orientation/attachment 默认记录 warning。
+- [ ] 预留 strict/debug/golden 模式，把 warning validator 升级为强门禁。
 - [ ] 增加 before/after fixtures。
 
 ### Milestone D - Pattern-Guided `start_plan`
@@ -620,4 +631,3 @@ V0.8 exit 前暂不做：
 - 不把截图作为主 validator。
 - 不允许 LLM success judgement 覆盖 geometry validators。
 - 不把一次性坐标写进 pattern 当作通用答案。
-

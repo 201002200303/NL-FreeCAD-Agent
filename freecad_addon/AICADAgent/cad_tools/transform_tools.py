@@ -43,6 +43,8 @@ def rotate(doc, target="", axis="Z", angle=0, origin_x=0, origin_y=0, origin_z=0
 
 def scale(doc, target="", scale_x=1, scale_y=1, scale_z=1, result_name=None):
     """Scale object shape uniformly or non-uniformly. Creates Part::Feature result."""
+    if float(scale_x) == 0 or float(scale_y) == 0 or float(scale_z) == 0:
+        raise ValueError(f"Scale factors must be non-zero, got {scale_x}x{scale_y}x{scale_z}")
     obj = get_object(doc, target)
     shape = get_shape(obj)
     center = shape.BoundBox.Center

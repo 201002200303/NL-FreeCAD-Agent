@@ -79,8 +79,17 @@ def revolve_sketch(doc, name="Revolution", sketch="", axis_x=0, axis_y=0, axis_z
     rev.Label = name
     rev.Profile = get_object(doc, sketch)
     rev.Angle = float(angle)
-    if hasattr(rev, "ReferenceAxis"):
-        rev.ReferenceAxis = (None, [f"Edge1"])
+
+    axis_vec = FreeCAD.Vector(float(axis_x), float(axis_y), float(axis_z))
+    if axis_vec.Length == 0:
+        axis_vec = FreeCAD.Vector(0, 0, 1)
+    axis_vec.normalize()
+    if hasattr(rev, "Axis"):
+        rev.Axis = axis_vec
+    elif axis_vec.isEqual(FreeCAD.Vector(0, 0, 1), 1e-9):
+        rev.ReferenceAxis = (None, ["Edge1"])
+    else:
+        raise ValueError("Current FreeCAD version cannot set a custom revolve axis")
     return {"tool": "revolve_sketch", "object": rev.Name, "sketch": sketch, "angle": angle, "type": "PartDesign::Revolution"}
 
 

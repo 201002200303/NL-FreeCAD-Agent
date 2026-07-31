@@ -21,6 +21,8 @@ def export_step(doc, target="", filepath=""):
 
 def export_stl(doc, target="", filepath="", tolerance=0.1):
     """Export target shape to STL mesh file."""
+    if float(tolerance) <= 0:
+        raise ValueError(f"Tolerance must be positive, got {tolerance}")
     obj = get_object(doc, target)
     shape = get_shape(obj)
     # Prefer native TopoShape export (FreeCAD Part API)

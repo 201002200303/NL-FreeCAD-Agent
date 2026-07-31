@@ -22,6 +22,11 @@ from app.llm.planner import (
     evaluate_step_result,
 )
 from app.tools.tool_specs import TOOL_SPECS
+from app.tools.query_policy import (
+    build_required_query_calls,
+    is_query_tool,
+    validate_query_before_act,
+)
 from app.abstract_steps.planner import (
     resolve_current_abstract_step,
     is_queue_exhausted,
@@ -208,6 +213,34 @@ def _check_type(value, expected_type: str) -> bool:
     return isinstance(value, types)
 
 
+def _validator_is_blocking(result: dict) -> bool:
+    return result.get("validator") in {"verify_object_exists", "verify_shape_valid"}
+
+
+def _consecutive_recent_errors(execution_history: dict | None) -> int:
+    """Count trailing error entries in recent history (oldest→newest list)."""
+    if not execution_history:
+        return 0
+    count = 0
+    for entry in reversed(execution_history.get("recent", [])):
+        if entry.get("status") == "error":
+            count += 1
+        else:
+            break
+    return count
+
+
+def _skip_default_object_validators(tool_call: dict, execution_result: dict) -> bool:
+    tool = tool_call.get("tool", "")
+    effect_type = (tool_call.get("expected_effect") or {}).get("type")
+    return (
+        execution_result.get("kind") == "query"
+        or is_query_tool(tool)
+        or tool in {"delete_object", "save_fcstd", "export_step", "export_stl"}
+        or effect_type in {"deletion", "query", "export"}
+    )
+
+
 def should_end(state: AgentState) -> str:
     """Routing function for conditional edge after validate_plan."""
     status = state.get("status", "")
@@ -351,6 +384,7 @@ def plan_next_step_node(state: AgentState) -> dict:
         document_state=document_state,
         execution_history=execution_history,
         name_map=name_map,
+        session_memory=state.get("session_memory"),
     )
     if current_abstract_step:
         result["abstract_step_id"] = current_abstract_step.get("step_id")
@@ -402,6 +436,23 @@ def validate_next_step_node(state: AgentState) -> dict:
             "error_message": "; ".join(errors),
         }
 
+    query_errors = validate_query_before_act(
+        tool_calls,
+        state.get("execution_history") or {},
+        session_memory=state.get("session_memory"),
+    )
+    if query_errors:
+        query_calls = build_required_query_calls(query_errors)
+        next_step_result["decision"] = "execute"
+        next_step_result["tool_calls"] = query_calls
+        next_step_result["message"] = "需要先查询当前几何事实，再执行空间/拓扑敏感操作。"
+        return {
+            "status": "ok",
+            "next_step_result": next_step_result,
+            "validation_errors": query_errors,
+            "query_required": True,
+        }
+
     return {"status": "ok"}
 
 
@@ -424,13 +475,29 @@ def evaluate_step_node(state: AgentState) -> dict:
     current_recipe = state.get("current_recipe") or {}
     current_abstract_step = state.get("current_abstract_step") or {}
     abstract_step_queue = state.get("abstract_step_queue")
+    strict_validation = bool(
+        state.get("strict_validation")
+        or current_recipe.get("strict_validation")
+        or (high_level_plan or {}).get("strict_validation")
+    )
 
     det_result = run_deterministic_checks(
         last_tool_call=last_tool_call,
         execution_result=execution_result,
         document_state=document_state,
     )
-    validator_names = resolve_validator_names(current_abstract_step, current_recipe)
+    is_query_execution = (
+        execution_result.get("kind") == "query"
+        or is_query_tool(last_tool_call.get("tool", ""))
+    )
+    skip_default_validators = _skip_default_object_validators(last_tool_call, execution_result)
+    validator_names = []
+    if strict_validation and not skip_default_validators:
+        validator_names = resolve_validator_names(current_abstract_step, current_recipe)
+        expected_validators = (last_tool_call.get("expected_effect") or {}).get("validators") or []
+        for name in expected_validators:
+            if name not in validator_names:
+                validator_names.append(name)
     from app.evaluation.validators import run_geometry_validators
 
     validator_results = run_geometry_validators(
@@ -443,7 +510,7 @@ def evaluate_step_node(state: AgentState) -> dict:
     failed_validator_messages = [
         f"{item['validator']}:{item['error_code']}"
         for item in validator_results
-        if not item.get("passed")
+        if not item.get("passed") and _validator_is_blocking(item)
     ]
     if failed_validator_messages and det_result["passed"]:
         det_result = {
@@ -463,6 +530,7 @@ def evaluate_step_node(state: AgentState) -> dict:
         deterministic_checks=det_result,
         validator_results=validator_results,
         current_abstract_step=current_abstract_step or None,
+        session_memory=state.get("session_memory"),
     )
     if result.get("repair_tool_calls"):
         result["repair_tool_calls"] = _sanitize_tool_calls(result["repair_tool_calls"])
@@ -470,17 +538,50 @@ def evaluate_step_node(state: AgentState) -> dict:
     result.setdefault("postcondition_results", validator_results)
     if not det_result["passed"]:
         result.setdefault("deterministic_issues", det_result.get("issues", []))
+        result["phase_status"] = "in_progress"
+        result.pop("updated_current_phase_id", None)
+        if result.get("decision") in {"finish", "abort"}:
+            result["decision"] = "continue"
+    warning_validator_messages = [
+        f"{item['validator']}:{item['error_code']}"
+        for item in validator_results
+        if not item.get("passed") and not _validator_is_blocking(item)
+    ]
+    if warning_validator_messages:
+        issues = result.setdefault("deterministic_issues", [])
+        issues.extend([f"warning:{msg}" for msg in warning_validator_messages])
 
-    if (
+    if is_query_execution:
+        result["decision"] = "continue"
+        result["phase_status"] = "in_progress"
+        result.pop("updated_current_phase_id", None)
+
+    # Success path: advance when tool execution succeeded and no blocking validators failed.
+    # Do not wait for LLM phase_status=completed — warning validators must not stall the queue.
+    can_advance_success = (
         abstract_step_queue
         and current_abstract_step
         and det_result["passed"]
+        and not is_query_execution
+        and not failed_validator_messages
         and should_advance_abstract_step(
             execution_passed=True,
             validator_results=validator_results,
         )
-        and result.get("phase_status") == "completed"
-    ):
+    )
+    # Failure path: consecutive errors or explicit skip → advance to avoid dead loops.
+    can_advance_skip = (
+        abstract_step_queue
+        and current_abstract_step
+        and not is_query_execution
+        and not det_result["passed"]
+        and (
+            result.get("decision") == "skip_and_continue"
+            or _consecutive_recent_errors(execution_history) >= 2
+        )
+    )
+
+    if can_advance_success or can_advance_skip:
         advancement = apply_abstract_step_advancement(
             abstract_step_queue,
             current_abstract_step["step_id"],
@@ -488,12 +589,19 @@ def evaluate_step_node(state: AgentState) -> dict:
         result["abstract_step_queue"] = advancement["abstract_step_queue"]
         result["current_abstract_step"] = advancement["current_abstract_step"]
         result["abstract_step_completed"] = advancement["queue_completed"]
+        result["phase_status"] = "completed"
         if advancement.get("updated_current_phase_id"):
             result["updated_current_phase_id"] = advancement["updated_current_phase_id"]
         if advancement["queue_completed"]:
             result["decision"] = "finish"
-            result["phase_status"] = "completed"
             result["message"] = result.get("message") or "All plan phases completed."
+        else:
+            result["decision"] = "continue"
+            if can_advance_skip:
+                result["message"] = (
+                    result.get("message")
+                    or f"跳过失败步骤 {current_abstract_step.get('step_id')}，进入下一 abstract step。"
+                )
 
     if result.get("current_abstract_step") and result.get("decision") not in {"finish", "abort"}:
         if result.get("phase_status") != "completed":

@@ -10,6 +10,7 @@ import FreeCAD
 from AICADAgent.document_state import get_document_state
 from AICADAgent.executor import CadToolExecutor
 from AICADAgent.debug_settings import is_debug_mode, get_debug_sessions_dir
+from AICADAgent.session_memory import SessionMemory
 
 AGENT_BASE_URL = "http://127.0.0.1:8765"
 
@@ -27,6 +28,16 @@ class AgentSession:
         self.session_id = high_level_plan.get("session_id", "local_session")
         self.abstract_step_queue = high_level_plan.get("abstract_step_queue")
         self.current_abstract_step = high_level_plan.get("current_abstract_step")
+        self.memory = SessionMemory(
+            goal=high_level_plan.get("goal", ""),
+            user_input=user_input,
+        )
+        self.memory.update_progress(
+            current_phase_id=self.current_phase_id,
+            current_abstract_step=self.current_abstract_step,
+            abstract_step_queue=self.abstract_step_queue,
+            high_level_plan=high_level_plan,
+        )
 
     def update_name_map(self, name_map_update: dict):
         """Update name_map with new mappings from tool execution."""
@@ -36,7 +47,7 @@ class AgentSession:
         """Add an execution history entry."""
         self.history.append(entry)
 
-    def get_history_summary(self, max_recent: int = 5) -> dict:
+    def get_history_summary(self, max_recent: int = 20) -> dict:
         """Get a summary of execution history for sending to Agent.
 
         Returns recent detailed results + older status counts.
@@ -57,6 +68,46 @@ class AgentSession:
             "recent": recent,
             "summary": status_counts if status_counts else {},
         }
+
+    def record_tool_result(self, tool_call: dict, exec_result: dict):
+        """Append history and refresh compressed session memory."""
+        call_id = tool_call.get("call_id", exec_result.get("call_id", "unknown"))
+        tool_name = tool_call.get("tool", exec_result.get("tool", ""))
+        name_map_update = exec_result.get("name_map_update", {})
+        if name_map_update:
+            self.update_name_map(name_map_update)
+        entry = {
+            "call_id": call_id,
+            "tool": tool_name,
+            "status": exec_result.get("status"),
+            "produced_objects": exec_result.get("produced_objects", []),
+            "name_map_update": name_map_update,
+            "message": exec_result.get("message"),
+            "kind": exec_result.get("kind"),
+            "query_target": exec_result.get("query_target"),
+            "query_targets": exec_result.get("query_targets"),
+            "query_result": exec_result.get("query_result"),
+        }
+        self.add_to_history(entry)
+        self.memory.update_from_tool(
+            tool_call,
+            exec_result,
+            phase_id=self.current_phase_id,
+            name_map=self.name_map,
+        )
+
+    def refresh_memory_from_document(self, document_state: dict | None = None):
+        doc_state = document_state if document_state is not None else get_document_state()
+        self.memory.sync_from_document(doc_state)
+        self.memory.update_progress(
+            current_phase_id=self.current_phase_id,
+            current_abstract_step=self.current_abstract_step,
+            abstract_step_queue=self.abstract_step_queue,
+            high_level_plan=self.high_level_plan,
+        )
+
+    def get_session_memory_pack(self) -> dict:
+        return self.memory.build_pack()
 
 
 class HTTPWorker(QtCore.QThread):
@@ -105,6 +156,7 @@ class AgentRunner(QtCore.QObject):
     log_message = QtCore.Signal(str)
     plan_generated = QtCore.Signal(dict)
     step_completed = QtCore.Signal(dict)
+    evaluation_completed = QtCore.Signal(dict)
     phase_changed = QtCore.Signal(str)
     execution_finished = QtCore.Signal(bool, str)  # (success, message)
     error_occurred = QtCore.Signal(str)
@@ -121,6 +173,7 @@ class AgentRunner(QtCore.QObject):
         self.debug_session_path: Optional[str] = None
         self.debug_step_name: Optional[str] = None
         self._before_step_state: Optional[dict] = None
+        self._last_tool_call: Optional[dict] = None
 
     def set_debug_mode(self, enabled: bool):
         self.debug_mode = enabled
@@ -210,6 +263,11 @@ class AgentRunner(QtCore.QObject):
         elif self.session.phases:
             self.session.current_phase_id = self.session.phases[0]["phase_id"]
 
+        try:
+            self.session.refresh_memory_from_document(get_document_state())
+        except Exception:
+            pass
+
         # Initialize executor
         try:
             self.executor = CadToolExecutor()
@@ -249,6 +307,7 @@ class AgentRunner(QtCore.QObject):
 
         # Build next_step request
         history_summary = self.session.get_history_summary()
+        self.session.refresh_memory_from_document(doc_state)
         payload = self._debug_payload({
             "session_id": self.session.session_id,
             "user_input": self.session.user_input,
@@ -256,6 +315,7 @@ class AgentRunner(QtCore.QObject):
             "current_phase_id": self.session.current_phase_id,
             "document_state": doc_state,
             "execution_history": history_summary,
+            "session_memory": self.session.get_session_memory_pack(),
             "name_map": self.session.name_map,
             "abstract_step_queue": self.session.abstract_step_queue,
             "current_abstract_step": self.session.current_abstract_step,
@@ -321,41 +381,41 @@ class AgentRunner(QtCore.QObject):
 
             try:
                 # Execute tool call (in main thread)
+                self._last_tool_call = tool_call
                 exec_result = self.executor.execute_tool_call(tool_call)
-
-                # Update name_map
-                name_map_update = exec_result.get("name_map_update", {})
-                self.session.update_name_map(name_map_update)
+                exec_result.setdefault("tool", tool_name)
+                exec_result.setdefault("call_id", call_id)
 
                 # Log result
                 if exec_result.get("status") == "success":
-                    produced = exec_result.get("produced_objects", [])
-                    self.log_message.emit(f"  [✓] {call_id}: 生成 {', '.join(produced) if produced else '无新对象'}")
+                    if exec_result.get("kind") == "query":
+                        target = exec_result.get("query_target") or ", ".join(exec_result.get("query_targets", []))
+                        self.log_message.emit(f"  [query] {call_id}: {tool_name} {target}")
+                    else:
+                        produced = exec_result.get("produced_objects", [])
+                        self.log_message.emit(f"  [ok] {call_id}: 生成 {', '.join(produced) if produced else '无新对象'}")
                 else:
                     msg = exec_result.get("message", "未知错误")
-                    self.log_message.emit(f"  [✗] {call_id}: {msg}")
+                    self.log_message.emit(f"  [error] {call_id}: {msg}")
 
-                # Add to history
-                self.session.add_to_history({
-                    "call_id": call_id,
-                    "tool": tool_name,
-                    "status": exec_result.get("status"),
-                    "produced_objects": exec_result.get("produced_objects", []),
-                    "name_map_update": name_map_update,
-                    "message": exec_result.get("message"),
-                })
+                self.session.record_tool_result(tool_call, exec_result)
+                try:
+                    self.session.refresh_memory_from_document(get_document_state())
+                except Exception:
+                    pass
 
                 self.step_completed.emit(exec_result)
                 self._log_tool_execution(tool_call, exec_result)
 
             except Exception as e:
                 self.log_message.emit(f"  [✗] {call_id}: 执行异常 - {e}")
-                self.session.add_to_history({
-                    "call_id": call_id,
-                    "tool": tool_name,
+                error_result = {
                     "status": "error",
                     "message": str(e),
-                })
+                    "tool": tool_name,
+                    "call_id": call_id,
+                }
+                self.session.record_tool_result(tool_call, error_result)
 
         # Request evaluation
         self._request_evaluation()
@@ -378,7 +438,7 @@ class AgentRunner(QtCore.QObject):
         # Build evaluate request
         payload = self._debug_payload({
             "session_id": self.session.session_id,
-            "last_tool_call": {
+            "last_tool_call": self._last_tool_call or {
                 "call_id": last_entry.get("call_id"),
                 "tool": last_entry.get("tool"),
             },
@@ -386,6 +446,7 @@ class AgentRunner(QtCore.QObject):
             "before_state": self._before_step_state,
             "document_state": doc_state_after,
             "execution_history": self.session.get_history_summary(),
+            "session_memory": self.session.get_session_memory_pack(),
             "high_level_plan": self.session.high_level_plan,
             "current_phase_id": self.session.current_phase_id,
             "current_abstract_step": self.session.current_abstract_step,
@@ -401,6 +462,7 @@ class AgentRunner(QtCore.QObject):
     def _on_evaluate_completed(self, result: dict):
         """Handle evaluate_step response."""
         self._update_debug_info(result)
+        self.evaluation_completed.emit(result)
         decision = result.get("decision", "")
         phase_status = result.get("phase_status", "")
 
@@ -422,7 +484,13 @@ class AgentRunner(QtCore.QObject):
                 for tool_call in repair_calls:
                     try:
                         exec_result = self.executor.execute_tool_call(tool_call)
-                        self.session.update_name_map(exec_result.get("name_map_update", {}))
+                        exec_result.setdefault("tool", tool_call.get("tool"))
+                        exec_result.setdefault("call_id", tool_call.get("call_id", "repair"))
+                        self.session.record_tool_result(tool_call, exec_result)
+                        try:
+                            self.session.refresh_memory_from_document(get_document_state())
+                        except Exception:
+                            pass
                         self._log_tool_execution(tool_call, exec_result)
                         if exec_result.get("status") == "success":
                             self.log_message.emit(f"  [✓] 修复成功")
@@ -447,8 +515,11 @@ class AgentRunner(QtCore.QObject):
 
         elif decision == "replan":
             self.log_message.emit(f"↻ 需要重新规划: {result.get('message', '')}")
-            # For V0.7, just stop and let user restart
-            self.execution_finished.emit(False, "需要重新规划")
+            self._sync_session_from_evaluate(result)
+            if self.auto_mode and not self.paused and not self.stopped:
+                QtCore.QTimer.singleShot(100, self.execute_next_step)
+            else:
+                self.log_message.emit("replan recorded; continue when ready")
 
         elif decision == "abort":
             self.log_message.emit(f"✗ 终止: {result.get('message', '')}")
@@ -483,6 +554,11 @@ class AgentRunner(QtCore.QObject):
             self.session.current_phase_id = phase_id
             self.log_message.emit(f"→ 进入下一阶段: {phase_id}")
             self.phase_changed.emit(phase_id)
+        self.session.memory.update_from_evaluate(result, self.session.high_level_plan)
+        try:
+            self.session.refresh_memory_from_document(get_document_state())
+        except Exception:
+            pass
 
     def _on_request_failed(self, error_msg: str):
         """Handle HTTP request failure."""

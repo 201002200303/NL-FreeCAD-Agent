@@ -26,7 +26,9 @@ from app.inspection.impact_map import build_impact_map
 from app.main import app
 from app.recipes.registry import select_recipe
 from app.schemas.cad_state import CADObject, DocumentState, TopologySummary
+from app.schemas.cad_state import BoundingBox
 from app.debug.replay_trace import replay_trace
+from app.graph.nodes import validate_next_step_node
 
 
 client = TestClient(app)
@@ -202,6 +204,345 @@ def test_geometry_validators_return_error_codes():
     assert failed[0]["error_code"] == "OBJECT_NOT_FOUND"
 
 
+def _bbox(xmin, xmax, ymin, ymax, zmin, zmax):
+    return BoundingBox(
+        xmin=xmin,
+        xmax=xmax,
+        ymin=ymin,
+        ymax=ymax,
+        zmin=zmin,
+        zmax=zmax,
+        center=[
+            (xmin + xmax) / 2,
+            (ymin + ymax) / 2,
+            (zmin + zmax) / 2,
+        ],
+        size=[xmax - xmin, ymax - ymin, zmax - zmin],
+    )
+
+
+def test_query_policy_rewrites_risky_target_to_required_query():
+    state = {
+        "next_step_result": {
+            "decision": "execute",
+            "tool_calls": [
+                {"tool": "set_placement", "args": {"target": "Body", "pos_x": 10}},
+            ],
+        },
+        "execution_history": {"recent": []},
+    }
+    result = validate_next_step_node(state)
+    assert result["status"] == "ok"
+    assert result["validation_errors"][0]["error_code"] == "QUERY_REQUIRED"
+    assert result["next_step_result"]["tool_calls"][0]["tool"] == "get_object_detail"
+    assert result["next_step_result"]["tool_calls"][0]["args"]["target"] == "Body"
+
+
+def test_query_policy_allows_risky_target_after_recent_query():
+    state = {
+        "next_step_result": {
+            "decision": "execute",
+            "tool_calls": [
+                {"tool": "set_placement", "args": {"target": "Body", "pos_x": 10}},
+            ],
+        },
+        "execution_history": {
+            "recent": [
+                {
+                    "kind": "query",
+                    "tool": "get_object_detail",
+                    "query_target": "Body",
+                    "query_result": {"name": "Body"},
+                }
+            ]
+        },
+    }
+    assert validate_next_step_node(state)["status"] == "ok"
+
+
+def test_query_policy_allows_primitive_creation_without_target():
+    state = {
+        "next_step_result": {
+            "decision": "execute",
+            "tool_calls": [
+                {
+                    "tool": "create_box",
+                    "args": {"name": "Body", "length": 100, "width": 40, "height": 20},
+                },
+            ],
+        },
+        "execution_history": {"recent": []},
+    }
+    assert validate_next_step_node(state)["status"] == "ok"
+
+
+def test_attachment_gap_validator_reports_measurement_and_repair_hint():
+    after = DocumentState(
+        document_name="doc",
+        objects=[
+            CADObject(name="Body", label="Body", type="Part::Box", bbox=_bbox(0, 100, 0, 40, 0, 20)),
+            CADObject(name="Wheel", label="Wheel", type="Part::Feature", bbox=_bbox(130, 150, 5, 25, 0, 20)),
+        ],
+    )
+    failed = run_geometry_validators(
+        ["verify_attachment_gap"],
+        after_state=after,
+        execution_result={"produced_objects": ["Wheel"]},
+        expectations={"attachment": {"obj_a": "Body", "obj_b": "Wheel", "axis": "X", "max_gap": 0.5}},
+    )[0]
+    assert failed["passed"] is False
+    assert failed["error_code"] == "ATTACHMENT_GAP_TOO_LARGE"
+    assert failed["actual"]["gap"] == 30
+    assert failed["repair_hint"]["args"]["dx"] == -30
+
+    attached = DocumentState(
+        document_name="doc",
+        objects=[
+            CADObject(name="Body", label="Body", type="Part::Box", bbox=_bbox(0, 100, 0, 40, 0, 20)),
+            CADObject(name="Wheel", label="Wheel", type="Part::Feature", bbox=_bbox(100, 120, 5, 25, 0, 20)),
+        ],
+    )
+    passed = run_geometry_validators(
+        ["verify_attachment_gap"],
+        after_state=attached,
+        execution_result={"produced_objects": ["Wheel"]},
+        expectations={"attachment": {"obj_a": "Body", "obj_b": "Wheel", "axis": "X", "max_gap": 0.5}},
+    )[0]
+    assert passed["passed"] is True
+
+
+def test_orientation_validator_uses_thin_axis_for_wheel_like_objects():
+    horizontal = DocumentState(
+        objects=[
+            CADObject(
+                name="Wheel_FL",
+                label="Wheel_FL",
+                type="Part::Feature",
+                bbox=_bbox(0, 60, 0, 20, 0, 60),
+            )
+        ]
+    )
+    result = run_geometry_validators(
+        ["verify_orientation"],
+        after_state=horizontal,
+        execution_result={"produced_objects": ["Wheel_FL"]},
+        expectations={"orientation": {"object": "Wheel_FL", "expected_axis": "Y", "mode": "thin"}},
+    )[0]
+    assert result["passed"] is True
+
+    vertical = DocumentState(
+        objects=[
+            CADObject(
+                name="Wheel_FL",
+                label="Wheel_FL",
+                type="Part::Feature",
+                bbox=_bbox(0, 60, 0, 60, 0, 20),
+            )
+        ]
+    )
+    failed = run_geometry_validators(
+        ["verify_orientation"],
+        after_state=vertical,
+        execution_result={"produced_objects": ["Wheel_FL"]},
+        expectations={"orientation": {"object": "Wheel_FL", "expected_axis": "Y", "mode": "thin"}},
+    )[0]
+    assert failed["passed"] is False
+    assert failed["error_code"] == "ORIENTATION_MISMATCH"
+
+
+def test_nonblocking_validator_warning_does_not_force_repair_or_block_advance():
+    queue = build_queue_from_phases(
+        [
+            {"phase_id": "P1", "intent": "Add wheel"},
+            {"phase_id": "P2", "intent": "Add lights"},
+        ]
+    ).model_dump(mode="json")
+    current_step = queue["steps"][0]
+    after = DocumentState(
+        objects=[
+            CADObject(
+                name="Wheel_FL",
+                label="Wheel_FL",
+                type="Part::Feature",
+                bbox=_bbox(0, 60, 0, 60, 0, 20),
+            )
+        ]
+    )
+    result = evaluate_step_node({
+        "session_id": "s1",
+        "high_level_plan": {"phases": [{"phase_id": "P1"}, {"phase_id": "P2"}]},
+        "current_phase_id": "P1",
+        "last_tool_call": {
+            "call_id": "P1_S1",
+            "tool": "create_cylinder",
+            "expected_effect": {
+                "new_object": "Wheel_FL",
+                "validators": ["verify_orientation"],
+                "orientation": {"object": "Wheel_FL", "expected_axis": "Y", "mode": "thin"},
+            },
+        },
+        "execution_result": {"status": "success", "produced_objects": ["Wheel_FL"]},
+        "document_state": after,
+        "before_state": DocumentState(objects=[]),
+        "execution_history": {"recent": []},
+        "abstract_step_queue": queue,
+        "current_abstract_step": current_step,
+        "strict_validation": True,
+    })["evaluate_result"]
+    assert result["decision"] == "continue"
+    assert result["phase_status"] == "completed"
+    assert any("warning:verify_orientation" in item for item in result["deterministic_issues"])
+    assert result["current_abstract_step"]["step_id"] == "P2"
+
+
+def test_query_execution_skips_default_object_validators_and_does_not_advance(monkeypatch):
+    import app.graph.nodes as nodes
+
+    def fake_evaluate(**kwargs):
+        return {
+            "decision": "continue",
+            "phase_status": "completed",
+            "message": "query ok",
+            "repair_tool_calls": [],
+        }
+
+    monkeypatch.setattr(nodes, "evaluate_step_result", fake_evaluate)
+    queue = build_queue_from_phases(
+        [
+            {"phase_id": "P1", "intent": "Create cabin"},
+            {"phase_id": "P2", "intent": "Add wheels"},
+        ]
+    ).model_dump(mode="json")
+    current_step = queue["steps"][0]
+    after = DocumentState(
+        document_name="doc",
+        objects=[
+            CADObject(
+                name="Chassis",
+                label="Chassis",
+                type="PartDesign::Pad",
+                topology=TopologySummary(solids=1, is_valid=True, volume=100.0),
+            )
+        ],
+    )
+    result = evaluate_step_node({
+        "session_id": "s1",
+        "high_level_plan": {"phases": [{"phase_id": "P1"}, {"phase_id": "P2"}]},
+        "current_phase_id": "P1",
+        "last_tool_call": {
+            "call_id": "P1_S1",
+            "tool": "get_object_detail",
+            "args": {"target": "Chassis"},
+            "expected_effect": {},
+        },
+        "execution_result": {
+            "status": "success",
+            "kind": "query",
+            "produced_objects": [],
+            "query_target": "Chassis",
+            "query_result": {"name": "Chassis", "topology": {"is_valid": True}},
+        },
+        "document_state": after,
+        "before_state": after,
+        "execution_history": {"recent": []},
+        "abstract_step_queue": queue,
+        "current_abstract_step": current_step,
+    })["evaluate_result"]
+    assert result["validator_results"] == []
+    assert result.get("deterministic_issues", []) == []
+    assert result["phase_status"] == "in_progress"
+    assert "updated_current_phase_id" not in result
+    assert result.get("current_abstract_step") is None
+    assert result.get("abstract_step_queue") is None
+
+
+def test_modify_existing_sketch_validates_target_instead_of_new_object(monkeypatch):
+    import app.graph.nodes as nodes
+
+    def fake_evaluate(**kwargs):
+        return {
+            "decision": "continue",
+            "phase_status": "completed",
+            "message": "line added",
+            "repair_tool_calls": [],
+        }
+
+    monkeypatch.setattr(nodes, "evaluate_step_result", fake_evaluate)
+    queue = build_queue_from_phases([{"phase_id": "P1", "intent": "draw sketch"}]).model_dump(mode="json")
+    after = DocumentState(
+        document_name="doc",
+        objects=[
+            CADObject(
+                name="Hood_Side_Sketch",
+                label="Hood_Side_Sketch",
+                type="Sketcher::SketchObject",
+                topology=TopologySummary(edges=1, vertices=2, is_valid=True),
+            )
+        ],
+    )
+    result = evaluate_step_node({
+        "session_id": "s1",
+        "high_level_plan": {"phases": [{"phase_id": "P1"}]},
+        "current_phase_id": "P1",
+        "last_tool_call": {
+            "call_id": "P1_S1",
+            "tool": "sketch_add_line",
+            "args": {"sketch": "Hood_Side_Sketch", "x1": 0, "y1": 0, "x2": 10, "y2": 10},
+            "expected_effect": {"new_object": None, "type": "sketch_geometry"},
+        },
+        "execution_result": {"status": "success", "produced_objects": []},
+        "document_state": after,
+        "before_state": DocumentState(objects=[]),
+        "execution_history": {"recent": []},
+        "abstract_step_queue": queue,
+        "current_abstract_step": queue["steps"][0],
+    })["evaluate_result"]
+    assert all(item["passed"] for item in result["validator_results"])
+    assert result.get("deterministic_issues", []) == []
+
+
+def test_deterministic_type_check_accepts_sketch_alias(monkeypatch):
+    import app.graph.nodes as nodes
+
+    monkeypatch.setattr(
+        nodes,
+        "evaluate_step_result",
+        lambda **kwargs: {
+            "decision": "continue",
+            "phase_status": "completed",
+            "message": "sketch created",
+            "repair_tool_calls": [],
+        },
+    )
+    after = DocumentState(
+        document_name="doc",
+        objects=[
+            CADObject(
+                name="Profile",
+                label="Profile",
+                type="Sketcher::SketchObject",
+                topology=TopologySummary(is_valid=True),
+            )
+        ],
+    )
+    result = evaluate_step_node({
+        "session_id": "s1",
+        "high_level_plan": {"phases": [{"phase_id": "P1"}]},
+        "current_phase_id": "P1",
+        "last_tool_call": {
+            "call_id": "P1_S1",
+            "tool": "create_sketch",
+            "args": {"name": "Profile"},
+            "expected_effect": {"new_object": "Profile", "type": "SketchObject"},
+        },
+        "execution_result": {"status": "success", "produced_objects": ["Profile"]},
+        "document_state": after,
+        "before_state": DocumentState(objects=[]),
+        "execution_history": {"recent": []},
+    })["evaluate_result"]
+    assert result.get("deterministic_issues", []) == []
+
+
 def test_advance_step_queue_moves_to_next_abstract_step():
     recipe = select_recipe(generate_cad_spec("create a 100x60x20 box with fillet radius 3").cad_spec)
     queue = AbstractStepQueue(**recipe["abstract_step_queue"])
@@ -222,8 +563,12 @@ def test_should_advance_requires_successful_execution():
     ) is True
     assert should_advance_abstract_step(
         execution_passed=True,
-        validator_results=[{"passed": False, "error_code": "SHAPE_INVALID"}],
-    ) is False
+        validator_results=[{"validator": "verify_shape_valid", "passed": False, "error_code": "SHAPE_INVALID"}],
+    ) is True
+    assert should_advance_abstract_step(
+        execution_passed=True,
+        validator_results=[{"validator": "verify_orientation", "passed": False, "error_code": "ORIENTATION_MISMATCH"}],
+    ) is True
 
 
 def test_apply_abstract_step_advancement_returns_next_step():
@@ -255,7 +600,7 @@ def test_build_queue_from_phases_unifies_control():
 
 def test_resolve_validator_names_defaults_on_llm_path():
     names = resolve_validator_names({"postconditions": []}, None)
-    assert names == ["verify_object_exists", "verify_shape_valid"]
+    assert names == []
 
 
 def test_llm_spec_used_for_open_requirement(monkeypatch):
@@ -313,8 +658,8 @@ def test_evaluate_runs_default_validators_without_recipe():
     }
     result = evaluate_step_node(state)
     eval_result = result["evaluate_result"]
-    assert eval_result["validator_results"]
-    assert all(item["passed"] for item in eval_result["validator_results"])
+    assert eval_result["validator_results"] == []
+    assert eval_result.get("deterministic_issues", []) == []
 
 
 def test_plan_next_step_uses_llm_for_llm_phase_step(monkeypatch):

@@ -5,14 +5,14 @@ from __future__ import annotations
 from app.abstract_steps.planner import advance_step_queue
 from app.abstract_steps.schemas import AbstractStepQueue
 
-DEFAULT_VALIDATORS = ["verify_object_exists", "verify_shape_valid"]
+DEFAULT_VALIDATORS: list[str] = []
 
 
 def resolve_validator_names(
     current_abstract_step: dict | None,
     current_recipe: dict | None = None,
 ) -> list[str]:
-    """Resolve which geometry validators to run for the current step."""
+    """Resolve optional strict geometry validators for the current step."""
     if current_abstract_step:
         names = [
             name
@@ -33,12 +33,8 @@ def should_advance_abstract_step(
     execution_passed: bool,
     validator_results: list[dict],
 ) -> bool:
-    """Return True when tool execution and geometry validators allow step advance."""
-    if not execution_passed:
-        return False
-    if not validator_results:
-        return True
-    return all(item.get("passed") for item in validator_results)
+    """Default advancement depends only on tool execution success."""
+    return bool(execution_passed)
 
 
 def apply_abstract_step_advancement(

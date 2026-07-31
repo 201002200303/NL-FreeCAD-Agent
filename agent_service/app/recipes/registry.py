@@ -36,7 +36,7 @@ RECIPES: dict[str, dict[str, Any]] = {
                 "intent": "Create the box solid described by the CAD spec.",
                 "expected_outputs": ["Base"],
                 "postconditions": ["verify_object_exists", "verify_shape_valid", "verify_bbox_close"],
-                "allowed_tool_categories": ["primitives"],
+                "allowed_tool_categories": [],
                 "risk_level": "low",
             }
         ],
@@ -56,7 +56,7 @@ RECIPES: dict[str, dict[str, Any]] = {
                 "intent": "Create the cylinder solid described by the CAD spec.",
                 "expected_outputs": ["Cylinder"],
                 "postconditions": ["verify_object_exists", "verify_shape_valid"],
-                "allowed_tool_categories": ["primitives"],
+                "allowed_tool_categories": [],
                 "risk_level": "low",
             }
         ],
@@ -76,7 +76,7 @@ RECIPES: dict[str, dict[str, Any]] = {
                 "intent": "Create the base box before adding edge features.",
                 "expected_outputs": ["Base"],
                 "postconditions": ["verify_object_exists", "verify_shape_valid"],
-                "allowed_tool_categories": ["primitives"],
+                "allowed_tool_categories": [],
                 "risk_level": "low",
             },
             {
@@ -86,7 +86,7 @@ RECIPES: dict[str, dict[str, Any]] = {
                 "input_refs": ["AS1"],
                 "expected_outputs": ["Base_Fillet"],
                 "postconditions": ["verify_object_exists", "verify_shape_valid", "verify_source_hidden"],
-                "allowed_tool_categories": ["features"],
+                "allowed_tool_categories": [],
                 "risk_level": "high",
             },
         ],
@@ -106,7 +106,7 @@ RECIPES: dict[str, dict[str, Any]] = {
                 "intent": "Create a cylindrical base.",
                 "expected_outputs": ["Base"],
                 "postconditions": ["verify_object_exists", "verify_shape_valid"],
-                "allowed_tool_categories": ["primitives"],
+                "allowed_tool_categories": [],
                 "risk_level": "low",
             }
         ],
@@ -127,7 +127,7 @@ RECIPES: dict[str, dict[str, Any]] = {
                 "input_refs": ["target"],
                 "expected_outputs": ["target_Hole"],
                 "postconditions": ["verify_object_exists", "verify_shape_valid", "verify_volume_decreased"],
-                "allowed_tool_categories": ["features", "boolean"],
+                "allowed_tool_categories": [],
                 "risk_level": "high",
             }
         ],
@@ -148,7 +148,7 @@ RECIPES: dict[str, dict[str, Any]] = {
                 "input_refs": ["base", "tool"],
                 "expected_outputs": ["Cut"],
                 "postconditions": ["verify_object_exists", "verify_shape_valid", "verify_volume_decreased"],
-                "allowed_tool_categories": ["boolean"],
+                "allowed_tool_categories": [],
                 "risk_level": "high",
             }
         ],

@@ -52,6 +52,7 @@ def generate_next_tool_calls(
     document_state: DocumentState,
     execution_history: dict,
     name_map: dict[str, str],
+    session_memory: dict | None = None,
 ) -> dict:
     """
     生成下一步工具调用。
@@ -66,6 +67,7 @@ def generate_next_tool_calls(
         document_state=document_state,
         execution_history=execution_history,
         name_map=name_map,
+        session_memory=session_memory,
     )
 
 
@@ -81,6 +83,7 @@ def evaluate_step_result(
     deterministic_checks: dict | None = None,
     validator_results: list[dict] | None = None,
     current_abstract_step: dict | None = None,
+    session_memory: dict | None = None,
 ) -> dict:
     """
     评估步骤执行结果，决定下一步动作。
@@ -98,6 +101,7 @@ def evaluate_step_result(
         deterministic_checks=deterministic_checks,
         validator_results=validator_results,
         current_abstract_step=current_abstract_step,
+        session_memory=session_memory,
     )
 
 

@@ -20,10 +20,13 @@ def test_registry_alignment():
 
 
 def test_tool_count():
-    assert len(TOOL_SPECS) == 42, f"Expected 42 tools, got {len(TOOL_SPECS)}"
+    assert len(TOOL_SPECS) == 49, f"Expected 49 tools, got {len(TOOL_SPECS)}"
     all_categorized = sum(len(c["tools"]) for c in TOOL_CATEGORIES.values())
-    assert all_categorized == 42
-    print("  PASS: 42 tools in specs and categories")
+    assert all_categorized == 49
+    print("  PASS: 49 tools in specs and categories")
+    for name in ("sketch_add_arc", "sketch_add_polyline", "sketch_add_bspline"):
+        assert name in TOOL_SPECS
+        assert get_category_for_tool(name) == "sketch"
 
 
 def test_category_retrieval():
@@ -47,8 +50,12 @@ def test_category_inference():
     print(f"  PASS: category inference -> {cats}")
 
     simple = infer_categories_for_task("创建一个球")
-    assert simple == ["primitives"]
+    assert "primitives" in simple
     print("  PASS: simple task inference")
+
+    broad = infer_categories_for_task("随便做个东西")
+    assert len(broad) == len(TOOL_CATEGORIES)
+    print("  PASS: unmatched task falls back to all categories")
 
 
 def test_prompt_subset_size():

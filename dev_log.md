@@ -1,5 +1,41 @@
 # Development Log
 
+## 2026-07-31: DeepSeek reasoning 空 content 导致 LLM 调用失败
+
+**现象**: `next_step` 返回 `LLM 调用失败`；trace 显示 `content=""`，JSON 在 `reasoning_content`。
+**根因**: `call_llm` 只读 `message.content`，reasoning 模型偶发把最终答案放进 `reasoning_content`。
+**修复**: `_message_text` 回退 `reasoning_content`；`_extract_json_object` 容忍 ```json 与 `json\n{...}` 前缀。
+
+## 2026-07-31: 草图曲线工具 arc / polyline / bspline
+
+**新增**（对齐 FreeCAD Sketcher 脚本 API）:
+- `sketch_add_arc`: `Part.ArcOfCircle`，mode=`three_point` | `center`（角度用度，内部转弧度）
+- `sketch_add_polyline`: 连续 `LineSegment` + `Coincident`，可选 `closed`
+- `sketch_add_bspline`: `Part.BSplineCurve.interpolate` / `buildFromPoles`
+
+**改动**: `sketch_tools.py` + `__init__`；`tool_specs`/`tool_registry`；工具数 46→49。验证: registry/spec 对齐 + `scripts/verify_sketch_curves.py`
+
+## 2026-07-31: Debug trace 可读化
+
+**问题**: 一步拆成 llm_01_system_prompt / user_message / raw / parsed 多文件，难跟上下文。
+**改动**: 每步主读 `llm_XX_trace.md`（工具列表→system prompt→user 上下文→模型输出）；session 根 `README.md`；去掉分散 md。
+
+## 2026-07-31: 工具规范修复 + evaluate 队列推进 bug
+
+**工具规范**（对照 tool_design / spec↔实现）:
+1. `set_placement`/`apply_placement`：全 0 参数可复位原点；`mirror` 隐藏源对象
+2. `revolve_sketch` 使用 axis_x/y/z；`create_sketch_on_face` face 大小写/越界校验
+3. primitive/fillet/scale 数值校验；unit 仅 mm；`compare_orientation` 用 tolerance_ratio 判各向同性
+4. executor abortTransaction 不掩盖原始错误；spec 描述同步
+
+**evaluate 推进**（3 个 harness 失败根因）:
+1. `normalize_evaluate_decision`：abstract step 未耗尽时禁止按 high_level 末阶段强制 finish
+2. 成功推进不再依赖 LLM `phase_status=completed`；warning validator 不阻断
+3. 连续失败≥2 或 `skip_and_continue` 时推进 abstract step，decision→continue
+
+**配置**: LLM → DeepSeek (`https://api.deepseek.com`, `deepseek-v4-flash`)
+**测试**: `test_v08_harness` + `test_tool_registry` 40 passed
+
 ## 2026-05-29: V0.8 CAD Harness Core
 
 **目标**: Spec → Impact → Recipe → Abstract Step 队列 → 滚动 tool_calls → validators → 推进 queue（非 sub_plan 脚本）。
@@ -211,3 +247,25 @@
 ## 2026-05-31: development_plan 关键时刻 + Pull 链路 rationale
 
 **改动**: Version Roadmap 增「关键时刻/版本依赖链/设计原则(Codex+SW 对照)」；V0.8–V0.11 各节补「为什么」与上下游；8.3 明确 Push→Pull query-before-act；exit criteria 阻塞 V0.9；修复文档转义损坏。
+
+## 2026-05-31: SessionMemory 四层工作记忆
+
+**问题**: history 是流水账，prompt 只取 recent[-5] 与 runner 发 20 条不一致；query_result 未结构化进 prompt；失败无 avoid_repeating。
+
+**改动**:
+1. **FreeCAD** `session_memory.py` + `AgentSession.record_tool_result/refresh_memory_from_document`：working/object/error/query_cache/progress/long_summary
+2. **Agent** `app/memory/` prompt 格式化 + history 回退 pack；`next_step`/`evaluate_step` 收 `session_memory`；prompt 改读 memory pack + 紧凑 object 索引（非全量 document_state）
+3. **query_policy**: `query_cache_covers_target` 优先于 history 扫描
+
+## 2026-05-31: 解绑 tool use 类别限制
+
+**问题**: abstract step / recipe 的 `allowed_tool_categories` 仅列 6 类；category 推断默认 `primitives`；prompt 未明确 sketch/partdesign/surface/assembly 可用。
+
+**改动**:
+1. `tool_registry`: `ALL_TOOL_CATEGORIES`、`resolve_tool_specs_for_prompt()` 默认全量 46 工具；未匹配任务推断回退全类别
+2. `build_queue_from_phases` / recipes: `allowed_tool_categories=[]` 表示不限
+3. prompt 注入 category summary + 全量 spec；next_step 规则明确可用全部 registry 工具
+
+## 2026-05-31: 取消每步 1-3 个 tool call 上限
+
+**改动**: `llm_provider` next_step prompt 去掉 1-3 限制，允许一步批量（如四轮子同批）；`development_plan` 设计原则同步。

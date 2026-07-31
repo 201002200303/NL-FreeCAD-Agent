@@ -8,10 +8,15 @@ from AICADAgent.cad_tools.feature_tools import add_fillet, add_chamfer, cut_hole
 from AICADAgent.cad_tools.transform_tools import move, rotate, scale, copy_object
 from AICADAgent.cad_tools.modify_tools import modify_param, delete_object, set_placement
 from AICADAgent.cad_tools.export_tools import save_fcstd, export_step, export_stl
-from AICADAgent.cad_tools.query_tools import list_topology
+from AICADAgent.cad_tools.query_tools import (
+    list_topology, summarize_document, get_object_detail,
+    measure_gap, compare_orientation,
+)
 from AICADAgent.cad_tools.sketch_tools import (
     create_body, create_sketch, create_sketch_on_face,
-    sketch_add_line, sketch_add_rect, sketch_add_circle, sketch_add_constraint,
+    sketch_add_line, sketch_add_rect, sketch_add_circle,
+    sketch_add_arc, sketch_add_polyline, sketch_add_bspline,
+    sketch_add_constraint,
 )
 from AICADAgent.cad_tools.partdesign_tools import (
     pad_sketch, pocket_sketch, pad_to_face, revolve_sketch, extrude_sketch,
@@ -44,6 +49,10 @@ TOOL_REGISTRY: dict = {
     "save_fcstd": save_fcstd,
     "export_step": export_step,
     "export_stl": export_stl,
+    "summarize_document": summarize_document,
+    "get_object_detail": get_object_detail,
+    "measure_gap": measure_gap,
+    "compare_orientation": compare_orientation,
     "list_topology": list_topology,
     "create_body": create_body,
     "create_sketch": create_sketch,
@@ -51,6 +60,9 @@ TOOL_REGISTRY: dict = {
     "sketch_add_line": sketch_add_line,
     "sketch_add_rect": sketch_add_rect,
     "sketch_add_circle": sketch_add_circle,
+    "sketch_add_arc": sketch_add_arc,
+    "sketch_add_polyline": sketch_add_polyline,
+    "sketch_add_bspline": sketch_add_bspline,
     "sketch_add_constraint": sketch_add_constraint,
     "pad_sketch": pad_sketch,
     "pocket_sketch": pocket_sketch,

@@ -38,7 +38,8 @@ def verify_shape_valid(before_state, after_state, tool_call, execution_result, e
         return _result("verify_shape_valid", False, "OBJECT_NOT_FOUND", f"Object '{name}' was not found.")
     topo = _get_attr(obj, "topology")
     valid = True if topo is None else bool(_get_attr(topo, "is_valid", True))
-    return _result("verify_shape_valid", valid, "SHAPE_INVALID", f"Object '{name}' has invalid shape.")
+    message = f"Object '{name}' shape is valid." if valid else f"Object '{name}' has invalid shape."
+    return _result("verify_shape_valid", valid, "SHAPE_INVALID", message)
 
 
 def verify_solid_count(before_state, after_state, tool_call, execution_result, expectations):
@@ -112,6 +113,102 @@ def verify_dependency_created(before_state, after_state, tool_call, execution_re
     return _result("verify_dependency_created", passed, "DEPENDENCY_MISSING", f"Dependency from '{name}' to '{source}' was not found.")
 
 
+def verify_attachment_gap(before_state, after_state, tool_call, execution_result, expectations):
+    expected = expectations.get("attachment") or _get_attr(tool_call.get("expected_effect", {}), "attachment")
+    if not expected:
+        return _result(
+            "verify_attachment_gap",
+            False,
+            "ATTACHMENT_EXPECTATION_MISSING",
+            "No attachment expectation was provided.",
+        )
+    obj_a_name = expected.get("obj_a") or expected.get("target") or (execution_result.get("source_objects") or [None])[0]
+    obj_b_name = expected.get("obj_b") or expected.get("object") or _expected_object_name(tool_call, execution_result, expectations)
+    axis = str(expected.get("axis", "X")).upper()
+    tolerance = float(expected.get("max_gap", expected.get("tolerance", 0.5)))
+    obj_a = _get_object(after_state, obj_a_name)
+    obj_b = _get_object(after_state, obj_b_name)
+    if obj_a is None or obj_b is None:
+        return _result(
+            "verify_attachment_gap",
+            False,
+            "OBJECT_NOT_FOUND",
+            f"Cannot measure attachment gap: '{obj_a_name}' or '{obj_b_name}' was not found.",
+            expected={"obj_a": obj_a_name, "obj_b": obj_b_name, "axis": axis, "max_gap": tolerance},
+        )
+    measurement = _measure_bbox_gap(_get_attr(obj_a, "bbox"), _get_attr(obj_b, "bbox"), axis, tolerance)
+    passed = measurement["gap"] <= tolerance
+    repair_axis = axis.lower()
+    repair_delta = -measurement["signed_distance"]
+    return _result(
+        "verify_attachment_gap",
+        passed,
+        "ATTACHMENT_GAP_TOO_LARGE",
+        (
+            f"{obj_b_name} gap to {obj_a_name} on {axis} is "
+            f"{measurement['gap']:.3f}mm (tolerance {tolerance:.3f}mm)."
+        ),
+        expected={"gap": 0.0, "axis": axis, "max_gap": tolerance},
+        actual=measurement,
+        delta=measurement["signed_distance"],
+        repair_hint=None if passed else {
+            "tool": "move",
+            "args": {
+                "target": obj_b_name,
+                f"d{repair_axis}": repair_delta,
+            },
+        },
+    )
+
+
+def verify_orientation(before_state, after_state, tool_call, execution_result, expectations):
+    expected = expectations.get("orientation") or _get_attr(tool_call.get("expected_effect", {}), "orientation") or {}
+    name = expected.get("object") or _expected_object_name(tool_call, execution_result, expectations)
+    expected_axis = str(expected.get("expected_axis", expected.get("axis", "Z"))).upper()
+    mode = expected.get("mode")
+    obj = _get_object(after_state, name)
+    if obj is None:
+        return _result(
+            "verify_orientation",
+            False,
+            "OBJECT_NOT_FOUND",
+            f"Object '{name}' was not found.",
+        )
+    bbox = _get_attr(obj, "bbox")
+    sizes = _bbox_sizes(bbox)
+    if not sizes:
+        return _result(
+            "verify_orientation",
+            False,
+            "BBOX_MISSING",
+            f"Object '{name}' has no bbox for orientation check.",
+        )
+    dominant_axis = max(sizes, key=sizes.get)
+    thin_axis = min(sizes, key=sizes.get)
+    if mode is None:
+        obj_type = _get_attr(obj, "type", "")
+        mode = "thin" if "Cylinder" in obj_type or "wheel" in name.lower() else "dominant"
+    actual_axis = thin_axis if mode == "thin" else dominant_axis
+    passed = actual_axis == expected_axis
+    return _result(
+        "verify_orientation",
+        passed,
+        "ORIENTATION_MISMATCH",
+        f"Object '{name}' orientation axis is {actual_axis}, expected {expected_axis}.",
+        expected={"axis": expected_axis, "mode": mode},
+        actual={
+            "actual_axis": actual_axis,
+            "dominant_axis": dominant_axis,
+            "thin_axis": thin_axis,
+            "sizes": sizes,
+        },
+        repair_hint=None if passed else {
+            "tool": "rotate",
+            "args": {"target": name, "axis": "X", "angle": 90},
+        },
+    )
+
+
 VALIDATORS = {
     "verify_object_exists": verify_object_exists,
     "verify_shape_valid": verify_shape_valid,
@@ -123,6 +220,8 @@ VALIDATORS = {
     "verify_source_hidden": verify_source_hidden,
     "verify_no_unexpected_visible_objects": verify_no_unexpected_visible_objects,
     "verify_dependency_created": verify_dependency_created,
+    "verify_attachment_gap": verify_attachment_gap,
+    "verify_orientation": verify_orientation,
 }
 
 
@@ -147,7 +246,18 @@ def _expected_object_name(tool_call, execution_result, expectations):
     if produced:
         return produced[0]
     expected = tool_call.get("expected_effect") or {}
-    return expected.get("new_object") or expected.get("object")
+    if expected.get("new_object"):
+        return expected["new_object"]
+    if expected.get("object"):
+        return expected["object"]
+    args = tool_call.get("args") or {}
+    return (
+        args.get("target")
+        or args.get("sketch")
+        or args.get("object")
+        or args.get("base")
+        or args.get("name")
+    )
 
 
 def _objects(state):
@@ -186,11 +296,66 @@ def _bbox_dict(bbox):
     return {k: getattr(bbox, k) for k in ("xmin", "xmax", "ymin", "ymax", "zmin", "zmax") if hasattr(bbox, k)}
 
 
-def _result(validator: str, passed: bool, error_code: str | None, message: str) -> dict:
+def _bbox_sizes(bbox):
+    data = _bbox_dict(bbox)
+    if data:
+        return {
+            "X": float(data["xmax"]) - float(data["xmin"]),
+            "Y": float(data["ymax"]) - float(data["ymin"]),
+            "Z": float(data["zmax"]) - float(data["zmin"]),
+        }
+    size = _get_attr(bbox, "size")
+    if isinstance(size, list) and len(size) >= 3:
+        return {"X": float(size[0]), "Y": float(size[1]), "Z": float(size[2])}
+    return {}
+
+
+def _measure_bbox_gap(bbox_a, bbox_b, axis: str, tolerance: float):
+    a = _bbox_dict(bbox_a)
+    b = _bbox_dict(bbox_b)
+    axis = axis.upper()
+    keys = {
+        "X": ("xmin", "xmax"),
+        "Y": ("ymin", "ymax"),
+        "Z": ("zmin", "zmax"),
+    }
+    lo_key, hi_key = keys[axis]
+    a_min, a_max = float(a[lo_key]), float(a[hi_key])
+    b_min, b_max = float(b[lo_key]), float(b[hi_key])
+    overlap = max(0.0, min(a_max, b_max) - max(a_min, b_min))
+    if overlap > 0:
+        signed_distance = 0.0
+        gap = 0.0
+    elif a_max <= b_min:
+        signed_distance = b_min - a_max
+        gap = signed_distance
+    else:
+        signed_distance = b_max - a_min
+        gap = abs(signed_distance)
     return {
+        "axis": axis,
+        "range_a": [a_min, a_max],
+        "range_b": [b_min, b_max],
+        "gap": gap,
+        "overlap": overlap,
+        "signed_distance": signed_distance,
+        "touching": gap <= tolerance,
+        "tolerance": tolerance,
+    }
+
+
+def _result(
+    validator: str,
+    passed: bool,
+    error_code: str | None,
+    message: str,
+    **extras,
+) -> dict:
+    result = {
         "validator": validator,
         "passed": passed,
         "error_code": None if passed else error_code,
         "message": message,
     }
-
+    result.update({k: v for k, v in extras.items() if v is not None})
+    return result

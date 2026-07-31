@@ -2,6 +2,19 @@
 
 from app.tools.tool_specs import TOOL_SPECS, get_tool_spec, list_tool_names
 
+ALL_TOOL_CATEGORIES: list[str] = [
+    "primitives",
+    "boolean",
+    "features",
+    "transform",
+    "export",
+    "query",
+    "sketch",
+    "partdesign",
+    "surface",
+    "assembly",
+]
+
 TOOL_CATEGORIES: dict[str, dict] = {
     "primitives": {
         "label": "基础几何",
@@ -35,9 +48,12 @@ TOOL_CATEGORIES: dict[str, dict] = {
         "tools": ["save_fcstd", "export_step", "export_stl"],
     },
     "query": {
-        "label": "拓扑查询",
-        "description": "列出边/面编号与几何信息，选边选面前必用",
-        "tools": ["list_topology"],
+        "label": "几何事实查询",
+        "description": "查询文档摘要、对象详情、bbox 间隙、朝向和拓扑，空间操作前必用",
+        "tools": [
+            "summarize_document", "get_object_detail", "measure_gap",
+            "compare_orientation", "list_topology",
+        ],
     },
     "sketch": {
         "label": "草图",
@@ -45,6 +61,7 @@ TOOL_CATEGORIES: dict[str, dict] = {
         "tools": [
             "create_body", "create_sketch", "create_sketch_on_face",
             "sketch_add_line", "sketch_add_rect", "sketch_add_circle",
+            "sketch_add_arc", "sketch_add_polyline", "sketch_add_bspline",
             "sketch_add_constraint",
         ],
     },
@@ -74,6 +91,26 @@ for _cat, _info in TOOL_CATEGORIES.items():
         _TOOL_TO_CATEGORY[_tool] = _cat
 
 
+def get_all_tool_specs() -> dict:
+    """Return the full registered tool spec map."""
+    return dict(TOOL_SPECS)
+
+
+def resolve_tool_specs_for_prompt(
+    allowed_categories: list[str] | None = None,
+    *,
+    allow_subset: bool = False,
+) -> dict:
+    """Resolve which tool specs to inject into LLM prompts.
+
+    Default policy: always expose the full registry. Category subsets are opt-in
+    only (tests / explicit harness experiments).
+    """
+    if allow_subset and allowed_categories:
+        return get_tools_by_categories(allowed_categories)
+    return get_all_tool_specs()
+
+
 def get_category_for_tool(tool_name: str) -> str | None:
     return _TOOL_TO_CATEGORY.get(tool_name)
 
@@ -91,9 +128,13 @@ def get_tools_by_categories(categories: list[str]) -> dict:
     return result
 
 
-def get_category_summary() -> str:
+def get_category_summary(categories: list[str] | None = None) -> str:
     lines = ["## 可用工具类别\n"]
-    for cat_id, info in TOOL_CATEGORIES.items():
+    items = TOOL_CATEGORIES.items()
+    if categories:
+        allowed = set(categories)
+        items = [(cat_id, info) for cat_id, info in items if cat_id in allowed]
+    for cat_id, info in items:
         tool_list = ", ".join(f"`{t}`" for t in info["tools"])
         lines.append(f"- **{cat_id}** ({info['label']}): {info['description']}")
         lines.append(f"  工具: {tool_list}\n")
@@ -144,8 +185,14 @@ def infer_categories_for_task(task_description: str) -> list[str]:
         "features": ["倒角", "fillet", "chamfer", "圆角", "打孔", "hole", "镜像", "mirror"],
         "transform": ["移动", "move", "旋转", "rotate", "缩放", "scale", "复制", "copy", "位置", "placement"],
         "export": ["导出", "export", "step", "stl", "保存", "save"],
-        "query": ["拓扑", "list_topology", "边", "面", "edge", "face", "编号"],
-        "sketch": ["草图", "sketch", "画", "矩形", "圆", "constraint", "约束"],
+        "query": [
+            "查询", "拓扑", "list_topology", "get_object_detail", "measure_gap",
+            "compare_orientation", "边", "面", "edge", "face", "编号", "间隙", "gap",
+        ],
+        "sketch": [
+            "草图", "sketch", "画", "矩形", "圆", "圆弧", "arc", "折线", "polyline",
+            "样条", "bspline", "spline", "constraint", "约束",
+        ],
         "partdesign": ["拉伸", "pad", "pocket", "切除", "特征", "partdesign", "body"],
         "surface": ["放样", "loft", "扫掠", "sweep", "pipe", "旋转体", "revolve"],
         "assembly": ["装配", "assembly", "配合", "mate", "同轴", "对齐"],
@@ -155,4 +202,4 @@ def infer_categories_for_task(task_description: str) -> list[str]:
         if any(kw in text for kw in keywords):
             categories.append(cat)
 
-    return categories or ["primitives"]
+    return categories or list(ALL_TOOL_CATEGORIES)

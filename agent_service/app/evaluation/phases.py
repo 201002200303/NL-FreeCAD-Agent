@@ -46,11 +46,21 @@ def normalize_evaluate_decision(
     high_level_plan: dict | None,
     current_phase_id: str | None,
 ) -> dict:
-    """Prevent premature finish when more phases remain."""
+    """Prevent premature finish when more phases / abstract steps remain."""
     out = dict(result)
     if out.get("abstract_step_completed"):
         out["decision"] = "finish"
         out["phase_status"] = "completed"
+        return out
+
+    # Abstract-step queue still has work: never finish based on high_level phase alone.
+    # (Recipe queues like AS1→AS2 may outlive a single high_level phase P1.)
+    next_abstract = out.get("current_abstract_step")
+    if next_abstract and out.get("decision") == "finish":
+        out["decision"] = "continue"
+        out["phase_status"] = "completed"
+        if not out.get("updated_current_phase_id"):
+            out["updated_current_phase_id"] = next_abstract.get("step_id")
         return out
 
     if not high_level_plan or not current_phase_id:
@@ -75,8 +85,8 @@ def normalize_evaluate_decision(
         if not out.get("message"):
             out["message"] = f"阶段 {current_phase_id} 完成，进入 {next_phase}"
 
-    # Last phase done → allow finish
-    if is_last_phase(high_level_plan, current_phase_id):
+    # Last high-level phase done → allow finish only when no abstract step remains
+    if is_last_phase(high_level_plan, current_phase_id) and not next_abstract:
         if phase_status == "completed" or decision == "finish":
             out["decision"] = "finish"
             out["phase_status"] = "completed"

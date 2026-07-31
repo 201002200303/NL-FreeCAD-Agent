@@ -105,22 +105,23 @@ class CadToolExecutor:
             result = tool_func(self.doc, **resolved_args)
             result["call_id"] = call_id
             result["status"] = "success"
+            is_query = result.get("kind") == "query"
 
             # Track name chain
             source = result.get("source")
             obj_name = result.get("object")
             name_map_update = {}
-            if source and obj_name and source != obj_name:
+            if not is_query and source and obj_name and source != obj_name:
                 self.name_map[source] = obj_name
                 name_map_update = {source: obj_name}
 
             # Build enhanced result
             produced = []
-            if obj_name:
+            if obj_name and not is_query:
                 produced.append(obj_name)
 
             source_objects = []
-            if source:
+            if source and not is_query:
                 source_objects.append(source)
 
             self._commit()
@@ -141,7 +142,10 @@ class CadToolExecutor:
                 ]}
             }
         except Exception as e:
-            self._rollback()
+            try:
+                self._rollback()
+            except Exception:
+                pass
             return {
                 "call_id": call_id,
                 "status": "error",
@@ -188,7 +192,10 @@ class CadToolExecutor:
             self._commit()
             return result
         except Exception as e:
-            self._rollback()
+            try:
+                self._rollback()
+            except Exception:
+                pass
             return {
                 "step_id": step_id,
                 "status": "error",

@@ -8,7 +8,10 @@ class AbstractStep(BaseModel):
     input_refs: list[str] = Field(default_factory=list)
     expected_outputs: list[str] = Field(default_factory=list)
     postconditions: list[str] = Field(default_factory=list)
-    allowed_tool_categories: list[str] = Field(default_factory=list)
+    allowed_tool_categories: list[str] = Field(
+        default_factory=list,
+        description="Optional category hint; empty list means all registered tools are allowed",
+    )
     max_retry: int = 2
     risk_level: str = Field(default="low")
     status: str = Field(default="pending")

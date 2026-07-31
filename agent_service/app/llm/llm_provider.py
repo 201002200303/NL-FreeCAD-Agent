@@ -9,7 +9,13 @@ from typing import Optional
 from dotenv import load_dotenv
 
 from app.tools.tool_specs import TOOL_SPECS
-from app.tools.tool_registry import build_tools_description, get_tools_by_categories
+from app.tools.tool_registry import (
+    build_tools_description,
+    get_category_for_tool,
+    get_category_summary,
+    get_tools_by_categories,
+    resolve_tool_specs_for_prompt,
+)
 from app.schemas.cad_state import DocumentState
 from app.debug.trace_logger import (
     get_current_step_name,
@@ -32,7 +38,13 @@ def _get_llm_config() -> tuple[str, str, str]:
 
 def _build_tools_description(tool_specs: dict | None = None) -> str:
     """Build the tools section of the system prompt."""
-    return build_tools_description(tool_specs or TOOL_SPECS)
+    specs = tool_specs or resolve_tool_specs_for_prompt()
+    categories = sorted({
+        cat for name in specs
+        if (cat := get_category_for_tool(name))
+    })
+    summary = get_category_summary(categories or None)
+    return f"{summary}\n\n{build_tools_description(specs)}"
 
 
 def _fmt_vec(vec, ndigits: int = 1) -> str:
@@ -127,7 +139,9 @@ def build_system_prompt(
     if tool_specs is not None:
         tools_description = _build_tools_description(tool_specs)
     elif tool_categories:
-        tools_description = _build_tools_description(get_tools_by_categories(tool_categories))
+        tools_description = _build_tools_description(
+            resolve_tool_specs_for_prompt(tool_categories, allow_subset=True)
+        )
     else:
         tools_description = _build_tools_description()
     doc_context = _build_document_context(document_state)
@@ -229,6 +243,64 @@ def build_system_prompt(
     return system_prompt
 
 
+def _message_text(message) -> str:
+    """从 chat completion message 取出可解析文本。
+
+    DeepSeek 等 reasoning 模型偶发把最终 JSON 放进 reasoning_content，
+    而 content 为空；此时需回退读取 reasoning_content。
+    """
+    content = getattr(message, "content", None) or ""
+    if isinstance(content, list):
+        # 兼容部分 SDK 的多段 content
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                parts.append(str(item.get("text") or item.get("content") or ""))
+            else:
+                parts.append(str(getattr(item, "text", "") or item))
+        content = "".join(parts)
+    content = str(content).strip()
+    if content:
+        return content
+
+    reasoning = getattr(message, "reasoning_content", None) or ""
+    return str(reasoning).strip()
+
+
+def _extract_json_object(text: str) -> dict:
+    """解析模型输出为 JSON 对象；容忍 markdown 代码块与前缀标签。"""
+    if text is None:
+        raise json.JSONDecodeError("Expecting value", "", 0)
+    raw = text.strip()
+    if not raw:
+        raise json.JSONDecodeError("Expecting value", raw, 0)
+
+    # ```json ... ``` 或 ``` ... ```
+    if raw.startswith("```"):
+        lines = raw.splitlines()
+        # drop opening fence
+        lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        raw = "\n".join(lines).strip()
+
+    # reasoning 偶发前缀 "json\n{...}"
+    if raw.lower().startswith("json"):
+        maybe = raw[4:].lstrip(" \t\r\n:")
+        if maybe.startswith("{") or maybe.startswith("["):
+            raw = maybe
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        # 再尝试截取第一个 {...} 块
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start >= 0 and end > start:
+            return json.loads(raw[start : end + 1])
+        raise
+
+
 def call_llm(user_input: str, system_prompt: str) -> Optional[dict]:
     """
     调用 LLM API 获取结构化输出
@@ -266,10 +338,11 @@ def call_llm(user_input: str, system_prompt: str) -> Optional[dict]:
             max_tokens=40960
         )
 
-        content = response.choices[0].message.content
+        message = response.choices[0].message
+        content = _message_text(message)
 
         try:
-            result = json.loads(content)
+            result = _extract_json_object(content)
             if trace and step_name:
                 trace.log_llm_call(
                     step_name,
@@ -583,30 +656,23 @@ def _build_next_step_prompt(
     current_phase_id: str,
     execution_history: dict,
     name_map: dict[str, str],
+    session_memory: dict | None = None,
+    user_input: str = "",
 ) -> str:
     """构建单步规划生成的 system prompt。"""
+    from app.memory.prompt import format_memory_for_prompt, resolve_memory_pack
+
     tools_description = _build_tools_description()
 
-    # 构建历史摘要
-    history_text = ""
-    recent = execution_history.get("recent", [])
-    if recent:
-        history_text = "## 最近执行历史\n"
-        for entry in recent[-5:]:  # 最近5步
-            status = entry.get("status", "unknown")
-            tool = entry.get("tool", "")
-            msg = entry.get("message", "")
-            history_text += f"- {tool}: {status}"
-            if msg:
-                history_text += f" - {msg}"
-            history_text += "\n"
-
-    # 构建 name_map
-    name_map_text = ""
-    if name_map:
-        name_map_text = "## 对象名称映射\n"
-        for old, new in name_map.items():
-            name_map_text += f"- {old} → {new}\n"
+    memory_pack = resolve_memory_pack(
+        session_memory,
+        execution_history,
+        user_input=user_input,
+        goal=high_level_plan.get("goal", ""),
+        name_map=name_map,
+        current_phase_id=current_phase_id,
+    )
+    memory_text = format_memory_for_prompt(memory_pack, name_map=name_map)
 
     # 当前阶段信息 + 全部阶段概览
     phases = high_level_plan.get("phases", [])
@@ -628,8 +694,9 @@ def _build_next_step_prompt(
 ## 你的任务
 1. 查看当前文档状态
 2. 查看高层计划和当前阶段
-3. 查看最近执行历史
-4. 为**当前阶段**生成下一步的工具调用（1-3个）
+3. 查看工作记忆（对象索引、查询缓存、错误记忆、最近关键事件）
+4. 判断当前步骤缺少哪些几何事实
+5. 为**当前阶段**生成下一步的工具调用（数量不限；可一次批量创建多个独立对象，如四个轮子）
 
 {phases_overview}
 
@@ -637,9 +704,7 @@ def _build_next_step_prompt(
 
 {phase_text}
 
-{history_text}
-
-{name_map_text}
+{memory_text}
 
 ## 输出格式要求
 
@@ -671,9 +736,11 @@ def _build_next_step_prompt(
 ## 规则
 
 1. **工具调用**：
-   - 每次生成 1-3 个工具调用
-   - 只使用可用工具，tool 名称必须完全匹配
+   - 一次可返回**任意数量**的 tool_calls，不要人为拆成 3 个一批；对称/重复部件（如四个轮子、多根立柱）应同一步批量创建
+   - 可使用 registry 中**任意已注册工具**（primitives / boolean / features / transform / sketch / partdesign / surface / assembly / query / export），不要自我限制为 create_box/create_cylinder
+   - tool 名称必须完全匹配 registry
    - 必填参数必须全部提供
+   - query 工具也是合法 tool call；当缺少几何事实时，先 query，不要猜坐标
 
 2. **对象引用**：
    - 使用 name_map 中的最新名称引用对象
@@ -692,6 +759,17 @@ def _build_next_step_prompt(
 
 5. **call_id 格式**：
    - 使用 {current_phase_id}_S1, {current_phase_id}_S2...
+
+6. **Query-before-act**：
+   - `summarize_document`：需要先了解当前文档对象树时使用
+   - `get_object_detail(target)`：移动、贴附、对齐、修改已有对象前必须优先考虑
+   - `measure_gap(obj_a, obj_b, axis)`：判断两个对象是否贴附/悬空时使用
+   - `compare_orientation(target, expected_axis)`：判断车轮、杆件、圆柱朝向时使用
+   - `list_topology(target)`：fillet/chamfer/boolean/sketch-on-face 或选择 face/edge 前使用
+   - 对 `set_placement`、`move`、`rotate`、`add_fillet`、`add_chamfer`、`boolean_*`、`cut_hole`、`create_sketch_on_face`、`pad_to_face` 这类空间/拓扑敏感操作，如果 query_cache 没有相关 target，先返回 query tool call
+   - query call 不代表阶段完成；query 后下一轮必须基于 query_cache / 对象索引 选择 act tool
+   - 如果 query_cache 已有同一 target，不要重复 query；直接 act
+   - 如果错误记忆中有 last_error 且 avoid_repeating=true，不要原样重试同一 tool+args；先修复根因或换方案
 
 ## 示例
 
@@ -729,21 +807,33 @@ def generate_next_tool_calls_with_llm(
     document_state: DocumentState,
     execution_history: dict,
     name_map: dict[str, str],
+    session_memory: dict | None = None,
 ) -> dict:
     """
     使用 LLM 生成下一步工具调用。
 
     V0.7: 用于闭环架构的 next_step 端点。
     """
+    from app.memory.prompt import resolve_memory_pack, build_compact_document_context
+
+    memory_pack = resolve_memory_pack(
+        session_memory,
+        execution_history,
+        user_input=user_input,
+        goal=high_level_plan.get("goal", ""),
+        name_map=name_map,
+        current_phase_id=current_phase_id,
+    )
     system_prompt = _build_next_step_prompt(
         high_level_plan=high_level_plan,
         current_phase_id=current_phase_id,
         execution_history=execution_history,
         name_map=name_map,
+        session_memory=memory_pack,
+        user_input=user_input,
     )
 
-    # 构建用户消息（包含文档状态）
-    doc_context = _build_document_context(document_state)
+    doc_context = build_compact_document_context(document_state, memory_pack)
     user_message = f"{doc_context}\n\n请生成下一步工具调用。"
 
     result = call_llm(user_message, system_prompt)
@@ -779,6 +869,8 @@ def generate_next_tool_calls_with_llm(
             current_phase_id=advanced_phase,
             execution_history=execution_history,
             name_map=name_map,
+            session_memory=memory_pack,
+            user_input=user_input,
         )
         retry_message = f"{doc_context}\n\n当前阶段 {current_phase_id} 已完成，请为阶段 {advanced_phase} 生成工具调用。"
         retry_result = call_llm(retry_message, retry_prompt)
@@ -845,7 +937,7 @@ def _build_evaluate_prompt(
 
 1. **成功判断**：
    - 检查 execution_result.status 是否为 "success"
-   - 检查 produced_objects 是否符合预期
+   - 默认不要用 produced_objects、对象存在性、shape_valid、gap、orientation 阻断流程；这些只作为 debug/strict trace
 
 2. **阶段完成 vs 全部完成**：
    - 当前阶段 intent 满足 → phase_status="completed", decision="continue", updated_current_phase_id 指向**下一阶段**
@@ -882,6 +974,7 @@ def evaluate_step_with_llm(
     deterministic_checks: dict | None = None,
     validator_results: list[dict] | None = None,
     current_abstract_step: dict | None = None,
+    session_memory: dict | None = None,
 ) -> dict:
     """
     使用 LLM 评估步骤执行结果。
@@ -890,7 +983,17 @@ def evaluate_step_with_llm(
     """
     system_prompt = _build_evaluate_prompt(high_level_plan, current_phase_id)
 
-    doc_context = _build_document_context(document_state)
+    from app.memory.prompt import resolve_memory_pack, format_memory_for_prompt, build_compact_document_context
+
+    memory_pack = resolve_memory_pack(
+        session_memory,
+        execution_history,
+        goal=(high_level_plan or {}).get("goal", ""),
+        current_phase_id=current_phase_id,
+        current_abstract_step=current_abstract_step,
+    )
+    memory_text = format_memory_for_prompt(memory_pack)
+    doc_context = build_compact_document_context(document_state, memory_pack)
     checks_section = ""
     if deterministic_checks is not None:
         checks_section += f"""## 确定性检查结果
@@ -925,21 +1028,25 @@ def evaluate_step_with_llm(
 {json.dumps(execution_result, ensure_ascii=False, indent=2)}
 ```
 
-{checks_section}{step_section}{doc_context}
+{checks_section}{step_section}{memory_text}
 
-请结合上述检查结果与文档状态，评估执行结果并决定下一步动作。
+{doc_context}
+
+请结合上述记忆、检查结果与文档状态，评估执行结果并决定下一步动作。
 """
 
     result = call_llm(user_message, system_prompt)
 
     if result is None:
         checks_passed = (deterministic_checks or {}).get("passed", True)
-        validators_passed = (
-            not validator_results or all(item.get("passed") for item in validator_results)
+        blocking_failed = any(
+            (not item.get("passed")
+             and item.get("validator") in {"verify_object_exists", "verify_shape_valid"})
+            for item in (validator_results or [])
         )
         return {
             "decision": "continue",
-            "phase_status": "completed" if checks_passed and validators_passed else "in_progress",
+            "phase_status": "completed" if checks_passed and not blocking_failed else "in_progress",
             "message": "LLM 调用失败，依据校验结果默认继续",
             "repair_tool_calls": [],
         }

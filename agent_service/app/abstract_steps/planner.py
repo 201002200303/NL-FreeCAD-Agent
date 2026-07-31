@@ -75,14 +75,7 @@ def build_queue_from_phases(phases: list[dict], recipe_id: str = "llm_session") 
                 intent=phase.get("intent") or phase.get("title") or "",
                 expected_outputs=[],
                 postconditions=postconditions,
-                allowed_tool_categories=[
-                    "primitives",
-                    "features",
-                    "boolean",
-                    "sketch",
-                    "transform",
-                    "export",
-                ],
+                allowed_tool_categories=[],
                 risk_level="medium",
             )
         )

@@ -21,6 +21,7 @@ class AgentState(TypedDict):
     # V0.7: Next step fields
     session_id: Optional[str]
     execution_history: Optional[dict]
+    session_memory: Optional[dict]
     name_map: Optional[dict[str, str]]
     next_step_result: Optional[dict]
 

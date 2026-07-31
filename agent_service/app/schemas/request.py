@@ -33,6 +33,9 @@ class NextStepRequest(BaseModel):
     current_phase_id: Optional[str] = Field(default=None, description="Current phase ID")
     document_state: Optional[DocumentState] = Field(default=None)
     execution_history: dict = Field(default_factory=dict)
+    session_memory: Optional[dict] = Field(
+        default=None, description="Compressed session memory pack for LLM prompts"
+    )
     name_map: dict[str, str] = Field(default_factory=dict)
     cad_spec: Optional[CADSpec] = Field(default=None)
     impact_map: Optional[dict] = Field(default=None)
@@ -48,6 +51,9 @@ class EvaluateStepRequest(BaseModel):
     execution_result: dict = Field(default_factory=dict)
     document_state: Optional[DocumentState] = Field(default=None)
     execution_history: dict = Field(default_factory=dict)
+    session_memory: Optional[dict] = Field(
+        default=None, description="Compressed session memory pack for LLM prompts"
+    )
     high_level_plan: dict = Field(default_factory=dict)
     current_phase_id: Optional[str] = Field(default=None)
     cad_spec: Optional[CADSpec] = Field(default=None)

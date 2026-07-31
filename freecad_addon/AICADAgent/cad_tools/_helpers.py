@@ -42,10 +42,10 @@ def apply_axis_rotation(rot_x=0, rot_y=0, rot_z=0):
 
 
 def apply_placement(obj, pos_x=0, pos_y=0, pos_z=0, rot_x=0, rot_y=0, rot_z=0):
-    if pos_x != 0 or pos_y != 0 or pos_z != 0:
-        obj.Placement.Base = FreeCAD.Vector(float(pos_x), float(pos_y), float(pos_z))
-    if rot_x != 0 or rot_y != 0 or rot_z != 0:
-        obj.Placement.Rotation = apply_axis_rotation(rot_x, rot_y, rot_z)
+    """Set absolute position/rotation. Always applies, so all-zero args reset
+    the object back to the origin / identity rotation (set_placement semantics)."""
+    obj.Placement.Base = FreeCAD.Vector(float(pos_x), float(pos_y), float(pos_z))
+    obj.Placement.Rotation = apply_axis_rotation(rot_x, rot_y, rot_z)
 
 
 def assign_shape_result(doc, target_name: str, new_shape, result_name=None):

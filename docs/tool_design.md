@@ -1,5 +1,10 @@
 # CAD Tool Design — 分层设计
 
+> 更新说明 (2026-07-31)：本文 Layer 1「高层语义工具」（make_base_plate 等）已被
+> recipe/pattern 机制取代，当前 46 个工具全部为 Layer 2-4。高层组合逻辑见
+> `agent_service/app/recipes/` 与 `docs/development_plan.md`（CAD coding agent 方向）。
+> 其余分层、定义规范、执行约定仍然有效。
+
 ## 设计原则
 
 1. **单一职责**：每个 Tool 只做一件事
@@ -41,6 +46,9 @@ Sketcher:
   create_sketch(name, plane)
   draw_rectangle(sketch, x, y, w, h)
   draw_circle(sketch, x, y, radius)
+  sketch_add_arc(sketch, mode, ...)          # Part.ArcOfCircle
+  sketch_add_polyline(sketch, points, closed)
+  sketch_add_bspline(sketch, points, mode)   # interpolate | poles
   add_constraint(sketch, constraint_type, ...)
 
 PartDesign:
