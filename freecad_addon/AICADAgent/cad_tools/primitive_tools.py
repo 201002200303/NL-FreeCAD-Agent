@@ -13,18 +13,37 @@ def _check_unit(unit: str) -> None:
 
 
 def create_box(doc, name="Box", length=10, width=10, height=10, unit="mm",
-               pos_x=0, pos_y=0, pos_z=0):
-    """Create a Part::Box in the given document with optional position."""
+               pos_x=0, pos_y=0, pos_z=0, anchor="min"):
+    """Create a Part::Box.
+
+    anchor:
+      - "min" (default): pos = bbox corner (xmin,ymin,zmin) — FreeCAD native
+      - "center": pos = bbox center (internally converted to corner placement)
+    """
     _check_unit(unit)
     if float(length) <= 0 or float(width) <= 0 or float(height) <= 0:
         raise ValueError(f"Box dimensions must be positive, got {length}x{width}x{height}")
+    mode = str(anchor or "min").strip().lower()
+    if mode not in {"min", "corner", "center"}:
+        raise ValueError(f"anchor must be 'min' or 'center', got {anchor!r}")
+    px, py, pz = float(pos_x), float(pos_y), float(pos_z)
+    if mode == "center":
+        px -= float(length) / 2.0
+        py -= float(width) / 2.0
+        pz -= float(height) / 2.0
     box = doc.addObject("Part::Box", name)
     box.Length = length
     box.Width = width
     box.Height = height
     box.Label = name
-    apply_placement(box, pos_x, pos_y, pos_z)
-    return {"tool": "create_box", "object": box.Name, "label": box.Label, "type": "Part::Box"}
+    apply_placement(box, px, py, pz)
+    return {
+        "tool": "create_box",
+        "object": box.Name,
+        "label": box.Label,
+        "type": "Part::Box",
+        "anchor": "center" if mode == "center" else "min",
+    }
 
 
 def create_cylinder(doc, name="Cylinder", radius=10, height=20, unit="mm",

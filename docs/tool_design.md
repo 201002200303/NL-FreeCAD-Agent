@@ -1,9 +1,11 @@
 # CAD Tool Design — 分层设计
 
 > 更新说明 (2026-07-31)：本文 Layer 1「高层语义工具」（make_base_plate 等）已被
-> recipe/pattern 机制取代，当前 46 个工具全部为 Layer 2-4。高层组合逻辑见
+> recipe/pattern 机制取代，当前工具全部为 Layer 2-4。高层组合逻辑见
 > `agent_service/app/recipes/` 与 `docs/development_plan.md`（CAD coding agent 方向）。
 > 其余分层、定义规范、执行约定仍然有效。
+>
+> **新增工具请以 `docs/tool_addition_standard.md` 为准**（注册位置、接口、调用方式、验收清单）。
 
 ## 设计原则
 

@@ -21,14 +21,14 @@ from app.evaluation.harness import (
     resolve_validator_names,
 )
 from app.evaluation.validators import run_geometry_validators
-from app.graph.nodes import plan_next_step_node, evaluate_step_node
+from app.workflow.service import plan_next_step_node, evaluate_step_node
 from app.inspection.impact_map import build_impact_map
 from app.main import app
 from app.recipes.registry import select_recipe
 from app.schemas.cad_state import CADObject, DocumentState, TopologySummary
 from app.schemas.cad_state import BoundingBox
 from app.debug.replay_trace import replay_trace
-from app.graph.nodes import validate_next_step_node
+from app.workflow.service import validate_next_step_node
 
 
 client = TestClient(app)
@@ -234,8 +234,12 @@ def test_query_policy_rewrites_risky_target_to_required_query():
     result = validate_next_step_node(state)
     assert result["status"] == "ok"
     assert result["validation_errors"][0]["error_code"] == "QUERY_REQUIRED"
-    assert result["next_step_result"]["tool_calls"][0]["tool"] == "get_object_detail"
-    assert result["next_step_result"]["tool_calls"][0]["args"]["target"] == "Body"
+    calls = result["next_step_result"]["tool_calls"]
+    # Prepend query; keep original act call (do not discard the plan).
+    assert calls[0]["tool"] == "get_object_detail"
+    assert calls[0]["args"]["target"] == "Body"
+    assert calls[1]["tool"] == "set_placement"
+    assert calls[1]["args"]["target"] == "Body"
 
 
 def test_query_policy_allows_risky_target_after_recent_query():
@@ -396,7 +400,7 @@ def test_nonblocking_validator_warning_does_not_force_repair_or_block_advance():
 
 
 def test_query_execution_skips_default_object_validators_and_does_not_advance(monkeypatch):
-    import app.graph.nodes as nodes
+    import app.workflow.service as nodes
 
     def fake_evaluate(**kwargs):
         return {
@@ -457,7 +461,7 @@ def test_query_execution_skips_default_object_validators_and_does_not_advance(mo
 
 
 def test_modify_existing_sketch_validates_target_instead_of_new_object(monkeypatch):
-    import app.graph.nodes as nodes
+    import app.workflow.service as nodes
 
     def fake_evaluate(**kwargs):
         return {
@@ -502,7 +506,7 @@ def test_modify_existing_sketch_validates_target_instead_of_new_object(monkeypat
 
 
 def test_deterministic_type_check_accepts_sketch_alias(monkeypatch):
-    import app.graph.nodes as nodes
+    import app.workflow.service as nodes
 
     monkeypatch.setattr(
         nodes,
@@ -553,6 +557,7 @@ def test_advance_step_queue_moves_to_next_abstract_step():
 
 
 def test_should_advance_requires_successful_execution():
+    """推进要求执行成功；验证器只有阻断类才拦，其余是 warning。"""
     assert should_advance_abstract_step(
         execution_passed=False,
         validator_results=[{"passed": True}],
@@ -561,10 +566,13 @@ def test_should_advance_requires_successful_execution():
         execution_passed=True,
         validator_results=[{"passed": True}, {"passed": True}],
     ) is True
+    # 对象根本没建出来 / shape 非法：阻断。此前这里断言 True，但调用点会把
+    # det_result.passed 翻掉，实际照样不推进；判断已收敛到本函数。
     assert should_advance_abstract_step(
         execution_passed=True,
         validator_results=[{"validator": "verify_shape_valid", "passed": False, "error_code": "SHAPE_INVALID"}],
-    ) is True
+    ) is False
+    # 朝向/贴合这类几何微差：不阻断主循环，只回灌成提示词 warning
     assert should_advance_abstract_step(
         execution_passed=True,
         validator_results=[{"validator": "verify_orientation", "passed": False, "error_code": "ORIENTATION_MISMATCH"}],
@@ -663,7 +671,7 @@ def test_evaluate_runs_default_validators_without_recipe():
 
 
 def test_plan_next_step_uses_llm_for_llm_phase_step(monkeypatch):
-    import app.graph.nodes as nodes
+    import app.workflow.service as nodes
 
     captured = {}
 
@@ -696,7 +704,7 @@ def test_plan_next_step_uses_llm_for_llm_phase_step(monkeypatch):
 
 
 def test_plan_next_step_falls_back_to_llm_without_harness(monkeypatch):
-    import app.graph.nodes as nodes
+    import app.workflow.service as nodes
 
     captured = {}
 

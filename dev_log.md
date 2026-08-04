@@ -1,5 +1,144 @@
 # Development Log
 
+## 2026-08-04: 提示词集中到 app/prompts/
+
+**目录**: `agent_service/app/prompts/*.md` + `README.md` 索引；`[[PLACEHOLDER]]` 注入；文件头 `<!-- 用途/调用方 -->` 注释不进模型。
+**接线**: chat / compress / vision / design_brief / high_level / next_step / evaluate / legacy / cad_spec 均改读 md；改提示词只改 md。
+**测试**: `test_prompts.py`。
+
+## 2026-08-04: 工具批让出 UI 帧（防假死）
+
+**改动**: `_execute_chat_tools` 改为队列 + `QTimer.singleShot(0)` 逐个执行；每工具后 `processEvents(50ms)`。stop 清空队列并用 `_chat_epoch` 作废进行中的批。
+
+## 2026-08-04: Cursor 式面板（Transcript + Composer）
+
+**UI**: 重写 `panel.py`；新增 `chat_ui.py`（`TranscriptView` / `ComposerBar`）。删 Plan 独立框；发送/停止进输入条；过程（plan/tools/vision/queue）以 thinking 灰色等宽字进对话流；日志改为可折叠抽屉。
+**Runner**: 新增 `chat_event{kind,text,meta}`；`show_panel` 强制重建 dock 避免旧控件残留。
+
+## 2026-08-04: 对话插话改为排队（修竞态）
+
+**策略**: 忙时不叠 HTTP；消息入队，当前轮 `awaiting_user/done/error` 或用户点停止后再发。`_chat_epoch` 作废过期回调。
+**顺带**: `start_plan` 写入 `high_level_plan.user_input`（evaluate brief 回取依赖此字段）。
+
+## 2026-08-04: 对话式建模 + 视觉层 + resume 断层
+
+**形态**: UI 从「生成计划→单步/自动」改为 Cursor 式对话框（`panel.py`）；主入口 `POST /agent/chat` + `POST /agent/compress`；旧三段式 API 仍保留兼容。
+**循环**: 用户消息 → LLM（自然语言 + 可选 tool_calls）→ 客户端执行 → tool_results 回灌；忙时插话排队；Plan 模式 / 视觉辅助为开关。
+**视觉**: `app/vision/` + FreeCAD `viewport.capture_viewport`；`.env`：`VISION_ENABLED` / `VISION_MODEL` / `VISION_API_KEY` / `VISION_BASE_URL`；`GET /agent/capabilities`。
+**resume**: 手工改文档 → `format_resume_note` 写入 transcript。
+**测试**: `test_chat_vision.py`。
+
+## 2026-08-04: 对话上下文累积（步骤间不再冷启动）
+
+**问题**: 每次 LLM 调用只发 `[system, user]` 两条，模型看不到自己上一步定了什么坐标系、为什么那么定，逐步重猜 → 步骤割裂。
+**新增 `app/conversation/`**（三层各一职）:
+- `transcript.py` — `Transcript` 值对象：`append_turn` / `render(system, pending_user)` / 预算内修剪
+- `store.py` — `ConversationStore`，与 runtime 共用 sqlite 文件但独立表 `conversation_messages`（对话可单独压缩清空，不动事件日志）
+- `__init__.py` — `conversation_scope(session_id)` contextvar 作用域，写法对齐 `debug/trace_logger`，避免参数穿三层
+
+**记什么（关键取舍）**: 存**助手原始输出**（缺失的连续性就在这）＋**一行工具结果**；**不存**每轮 user_message 里的文档状态快照——那是快照不是增量，累积既烧 token 又让新旧状态互相矛盾。完整快照只作为当前轮最后一条 user 消息发出。`call_llm` 新增 `transcript_note`（计入历史的精简版）与 `record`（旁路调用如 cad_spec/legacy plan 不入库）。
+**修剪**: 默认 120k 字符（`CONVERSATION_BUDGET_CHARS` 可调），始终保留最早那轮（含原始需求），中间成对丢弃，省略标记并入首条保留消息以维持 user/assistant 交替。
+**接线**: `main.py` 三个端点与 trace 同层开作用域；作用域退出只落库新增部分。存储故障降级为无历史，不拖垮建模。
+
+**效果**: next_step → evaluate_step → next_step 现在是一条连续消息流，形如 coding agent 的 `assistant 决策 → tool result → assistant 决策`。
+**测试**: 新增 `test_conversation.py`（22 项）；全量 123 passed。
+**注**: 测试用 `tempfile.mkdtemp` 而非 `tmp_path`（本机 pytest 临时目录权限被拒，仓库既有约定如此）。
+
+## 2026-08-04: 需求原文回注 + 验证闭环打通 + LLM 重试
+
+**根因（最重要）**: `user_input` 是 `_build_next_step_prompt` 的形参却**从未进入提示词正文**——只喂了知识检索，而记忆包 `working_lines = [goal or user_input]` 又把它丢掉。于是每步只看得到一句 `goal`，用户写的尺寸/坐标系/对称要求全程不可见，模型逐步重新猜坐标。
+**改动**: 新增 `app/design/`（设计意图层，与 memory「发生了什么」分开）；`format_design_brief` 原样渲染需求原文，注入 next_step 与 evaluate 提示词（evaluate 无 user_input，从 `high_level_plan.user_input` 回取）。
+
+**验证闭环**: 模型在 `expected_effect.validators` 里**自己点名**的验证器此前被恒 False 的 `strict_validation` 一起吞掉，验证器从未运行。改为两种来源分离——自声明的总是跑，配方/步骤默认后置条件仍归 strict。
+**阻断策略单一来源**: `BLOCKING_VALIDATORS` / `is_blocking_validator` / `blocking_failures` 收进 `evaluation/validators.py`；`should_advance_abstract_step` 真正使用 `validator_results`（此前收参不用，判断散在调用点）。端到端行为不变，只是从两处收敛到一处。
+
+**LLM 重试**: `call_llm` 拆出 `_attempt_llm_call`，3 次指数退避，异常与 JSON 截断都重试——修 P4 收尾阶段单次失败即 abort、倒角全不执行。
+
+**提示词硬规则**: 对称件必须 `mirror`（禁手算对侧坐标，已知高频不对称成因）；精修阶段倒角/圆角取相邻最小尺寸 5%~15%，禁整体 `edge_selector=all`。
+
+**清理**: 删除 `app/graph/`（`state.py` 零引用、`cad_graph.py` 空壳、`nodes.py` 仅 re-export）；`scripts/diag_failing_tests.py` 改指 `app.workflow.service`。
+**测试**: 新增 `test_v09_closed_loop.py`（17 项）；全量 101 passed。
+
+**注**: `mirror` 工具本就存在（`tool_specs.py`），缺的是硬规则不是工具。未做：持续 messages 数组（见下）与视觉闭环。
+
+## 2026-08-03: 拆 LangGraph，工作流收成 app.workflow
+
+**结构**: 新增 `app/workflow/service.py` 为唯一脊柱（`start_plan`/`next_step`/`evaluate_step`/`legacy_plan`）；`main.py` 变 HTTP 薄壳；`graph/cad_graph.py` 删除；`graph/nodes.py` 仅作兼容 re-export。
+**收敛**: evaluate 决策只 normalize 一次（去掉 `llm_provider` 内第二次）；abstract_step_queue 只在 `workflow.start_plan` 构建一次（去掉 node/main 双建）。
+**依赖**: requirements 去掉 langgraph/langchain；旧 `/agent/plan` 改为 `legacy_plan` 纯函数循环。
+**测试**: 84 passed。
+
+## 2026-08-02: create_box anchor=center（修键槽偏心「斜槽」）
+
+**根因**: Part::Box 的 pos 是角点 (xmin,ymin,zmin)；LLM 用 pos_y=0 以为居中，实际 y=0..width，圆柱侧切偏心像斜槽。
+**改动**: `create_box` 增 `anchor=min|center`；tool_specs 写清；`stepped_shaft.md` 键槽强制 center + 禁 fillet all。
+
+## 2026-08-02: 上下文阶段窗口 + query 不洗批 + phase/queue 同步
+
+**query**: `boolean_*` 对文档/记忆已存在对象不再 QUERY_REQUIRED；validate 改为 query **prepend** 原批（不丢计划）。
+**phase**: evaluate 以 abstract_step_queue 为权威，禁止 LLM 单独跳 phase；next_step 不再自动进阶；runner 跟 step_id。
+**context**: SessionMemory `phase_events` / `phase_conclusions`；prompt 优先注入当前阶段轨迹与已完成结论。
+**测试**: `test_phase_sync.py` + query_policy/harness 回归。
+
+## 2026-08-01: 工具新增与验收标准文档
+
+**新增**: `docs/tool_addition_standard.md` — 双侧注册位置、函数/返回契约、LLM 调用格式、name_map/query_policy、Checklist 与 DoD；`tool_design.md` 顶部指向该文。
+
+## 2026-08-01: 全量工具冒烟测试 + 修复 5 处接口问题
+
+**测试**: FreeCADCmd 跑 `tests/test_all_tools_smoke.py`（54 工具）；初测 105/109，修后 **109/109**。
+**发现并修**:
+1. `linear_pattern` 末尾 `return result}` 语法错误（无法 import）
+2. `scale`: FC1.1 `Shape.scale(factor, base)` 仅等比；非等比改 Matrix；先 copy 防 immutable
+3. `copy_object` 返回 `source` 污染 executor name_map → `modify_param` 打到副本；改为 `copied_from`
+4. `measure_gap`/`compare_orientation`: FC1.1 PrimitivePy 无 `getBoundBox` → 用 Shape.BoundBox
+5. `pad_to_face` 跨 Body UpToFace 静默坏几何 → 回退 Length + note；`revolve_sketch` 用 ReferenceAxis；`pad_sketch` SideType；Horizontal 约束单参
+
+## 2026-08-01: 修 copy_object + 阵列工具 + 三篇建模技能文档
+
+**P0**: `copy_object` 误把 `name` 传给 `Document.copyObject` 第3参（应为 bool）→ 改为正确 copy 后物化为指定 Name 的 `Part::Feature`。
+**阵列**: 新增 `polar_pattern` / `linear_pattern`（FreeCAD + tool_specs/registry，52→54）；query_policy 识别阵列产物名与 `fuse_name`。
+**知识**: `gear.md` / `mouse.md` / `stepped_shaft.md` 专业工序文档；retrieval 截断 1500→6000。
+**测试**: `test_pattern_tools.py`（FreeCAD 侧）；`test_tool_registry`/`test_knowledge` 更新。
+
+## 2026-08-01: V0.9 手册阶段 A~F 落地
+
+**A**: runner pause/resume 持久化 + restore_session；panel 暂停/继续切换、恢复会话、回答并继续、checkpoint/事件数显示。
+**B**: `align_objects` / `place_relative` / `distribute_along`（49→52）；spec/registry/query_policy/prompt；FreeCAD `tests/test_placement_tools.py`。
+**C**: validators `verify_grounded/no_overlap/touching/size_close` + `test_validators_v09.py`。
+**D**: `app/modeling_knowledge/` patterns + retrieval，注入 start_plan/next_step；`test_knowledge.py`。
+**E**: ask_user → 面板回答并继续；evaluate 回传 name_map 进 checkpoint。
+**F**: `test_lifecycle.py`；回归 `76 passed`。
+
+## 2026-08-01: V0.9 生命周期基建（部分完成）+ 实施手册
+
+**已落地**: 服务端 `runtime/diff.py`（文档 diff）+ `runtime/reducer.py`（事件→RunState）+ pause/resume/snapshot/list 四个 API（`/agent/session/*`）；executor call_id 幂等去重；agent_runner 批量结果收集 + evaluate 聚焦失败 call + batch_summary + repair 后回 evaluate 闭环；session_memory.restore_from_pack。
+**执行依据**: `docs/v09_implementation_playbook.md`。
+
+## 2026-07-31: 修复 query_before_act 误杀同批创建（幽灵对象循环）
+
+**现象**: `session_d107267a` 中 LLM 一步批量 `[create_sphere→A, scale A→B, create_box→C, boolean_cut(base=B, tool=C)]`，被 `query_before_act` 标记 B 为 QUERY_REQUIRED → 整批被替换为 `get_object_detail(B)` → B 还没创建 → "Object not found" → LLM 死循环。
+**根因**: 政策只看文档/缓存里有没有 B，不知道 B 是同批更早的 call 产生的。
+**修复**: `query_policy.py` 批量感知——`_batch_producer_index` 收集每个 call 之前同批已产出的对象名（`expected_effect.new_object` / `args.name` / `args.result_name`）；`validate_query_before_act` 对 risky call 的每个引用 target（`base/tool/obj_a/obj_b/part1/part2` 全部），若由更早同批 call 产出则跳过查询要求；前向引用仍报错。
+**测试**: `test_query_policy.py` 12 项（含原 bug 复现 + 前向引用仍报错）；`test_pipeline/test_v08_harness/test_geometry_facts/test_runtime` 40 passed。
+
+## 2026-07-31: 修复 query 空转（bbox/摘要/covers）
+
+**现象**: P2 在 `get_object_detail`↔`list_topology` 循环；有 volume 但无 size。
+**根因**:
+1. `get_object_detail`/`document_state` 对 loft 的 bbox 仍空，而 `list_topology` 有 bbox
+2. query 摘要只认 `bbox.size`，丢掉 topology 的 `bbox.x/y/z`
+3. `query_cache` compact 丢掉 size；covers 只要命中 target 就算覆盖
+**修复**: 统一 spatial facts；list_topology/get_object_detail 补 size+center；covers 要求 size+center；prompt 禁止 incomplete 空转。
+
+## 2026-07-31: Runtime Phase1 — Event Log + Checkpoint + 粗计划/感知
+
+**审计**: 大改目录收口为 Phase1；基线 `0ca25ae`；详见 `docs/runtime_refactor.md`。
+**新增**: `app/runtime/`（sqlite event log + checkpoint + context slice）；API 接线 start/next/evaluate/log。
+**粗计划**: start_plan prompt 只输出顺序+角色，禁止工艺细节。
+**感知**: FreeCAD `document_state` 加强 bbox（isNull / Body.Tip / Shape.BoundBox 回退）。
+**测试**: `test_runtime.py`。
+
 ## 2026-07-31: DeepSeek reasoning 空 content 导致 LLM 调用失败
 
 **现象**: `next_step` 返回 `LLM 调用失败`；trace 显示 `content=""`，JSON 在 `reasoning_content`。

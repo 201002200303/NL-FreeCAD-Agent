@@ -5,7 +5,10 @@ from AICADAgent.cad_tools.primitive_tools import (
 )
 from AICADAgent.cad_tools.boolean_tools import boolean_fuse, boolean_cut, boolean_common
 from AICADAgent.cad_tools.feature_tools import add_fillet, add_chamfer, cut_hole, mirror
-from AICADAgent.cad_tools.transform_tools import move, rotate, scale, copy_object
+from AICADAgent.cad_tools.transform_tools import (
+    move, rotate, scale, copy_object, polar_pattern, linear_pattern,
+)
+from AICADAgent.cad_tools.placement_tools import align_objects, place_relative, distribute_along
 from AICADAgent.cad_tools.modify_tools import modify_param, delete_object, set_placement
 from AICADAgent.cad_tools.export_tools import save_fcstd, export_step, export_stl
 from AICADAgent.cad_tools.query_tools import (
@@ -44,6 +47,11 @@ TOOL_REGISTRY: dict = {
     "rotate": rotate,
     "scale": scale,
     "copy_object": copy_object,
+    "polar_pattern": polar_pattern,
+    "linear_pattern": linear_pattern,
+    "align_objects": align_objects,
+    "place_relative": place_relative,
+    "distribute_along": distribute_along,
     "modify_param": modify_param,
     "delete_object": delete_object,
     "save_fcstd": save_fcstd,

@@ -36,9 +36,11 @@ TOOL_CATEGORIES: dict[str, dict] = {
     },
     "transform": {
         "label": "变换与修改",
-        "description": "位置、移动、旋转、缩放、复制、参数修改、删除",
+        "description": "位置、移动、旋转、缩放、复制、圆周/线性阵列、参数修改、删除",
         "tools": [
             "set_placement", "move", "rotate", "scale", "copy_object",
+            "polar_pattern", "linear_pattern",
+            "align_objects", "place_relative", "distribute_along",
             "modify_param", "delete_object",
         ],
     },
@@ -183,7 +185,11 @@ def infer_categories_for_task(task_description: str) -> list[str]:
         ],
         "boolean": ["合并", "fuse", "union", "cut", "切割", "布尔", "交集", "common"],
         "features": ["倒角", "fillet", "chamfer", "圆角", "打孔", "hole", "镜像", "mirror"],
-        "transform": ["移动", "move", "旋转", "rotate", "缩放", "scale", "复制", "copy", "位置", "placement"],
+        "transform": [
+            "移动", "move", "旋转", "rotate", "缩放", "scale", "复制", "copy",
+            "位置", "placement", "对齐", "align", "相对", "distribute", "排列",
+            "阵列", "pattern", "polar", "圆周", "linear_pattern",
+        ],
         "export": ["导出", "export", "step", "stl", "保存", "save"],
         "query": [
             "查询", "拓扑", "list_topology", "get_object_detail", "measure_gap",

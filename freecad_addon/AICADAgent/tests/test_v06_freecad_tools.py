@@ -110,7 +110,7 @@ def run_tests():
     check("export_stl", r.get("status") == "success" and os.path.exists(stl_path), r)
 
     # Registry completeness
-    check("registry_count", len(TOOL_REGISTRY) == 22, f"got {len(TOOL_REGISTRY)}")
+    check("registry_count", len(TOOL_REGISTRY) == 54, f"got {len(TOOL_REGISTRY)}")
 
     print()
     print(f"Results: {passed} passed, {failed} failed")

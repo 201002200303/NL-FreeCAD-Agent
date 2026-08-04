@@ -3,7 +3,7 @@
 import json
 import urllib.request
 from typing import Optional
-from PySide import QtCore
+from PySide import QtCore, QtGui
 
 import FreeCAD
 
@@ -11,8 +11,40 @@ from AICADAgent.document_state import get_document_state
 from AICADAgent.executor import CadToolExecutor
 from AICADAgent.debug_settings import is_debug_mode, get_debug_sessions_dir
 from AICADAgent.session_memory import SessionMemory
+from AICADAgent.viewport import capture_viewport
 
 AGENT_BASE_URL = "http://127.0.0.1:8765"
+
+
+def _format_soft_plan(plan: dict | None) -> str:
+    if not plan:
+        return ""
+    items = plan.get("items") or plan.get("phases") or []
+    if not items:
+        return ""
+    lines = []
+    for it in items:
+        if isinstance(it, dict):
+            st = it.get("status") or "pending"
+            title = it.get("title") or it.get("intent") or ""
+            iid = it.get("id") or it.get("phase_id") or ""
+            lines.append(f"[{st}] {iid} {title}".strip())
+        else:
+            lines.append(str(it))
+    return "\n".join(lines)
+
+
+class ChatSession:
+    """对话式会话：一个文档 + 一条持续上下文。"""
+
+    def __init__(self, user_goal: str = ""):
+        self.session_id: Optional[str] = None
+        self.user_goal = user_goal
+        self.name_map: dict = {}
+        self.soft_plan: Optional[dict] = None
+        self.memory = SessionMemory(goal=user_goal, user_input=user_goal)
+        self.plan_mode = True
+        self.vision_enabled = False
 
 
 class AgentSession:
@@ -116,24 +148,34 @@ class HTTPWorker(QtCore.QThread):
     request_completed = QtCore.Signal(dict)
     request_failed = QtCore.Signal(str)
 
-    def __init__(self, endpoint: str, payload: dict, debug_mode: bool = False, parent=None):
+    def __init__(
+        self,
+        endpoint: str,
+        payload: Optional[dict] = None,
+        debug_mode: bool = False,
+        method: str = "POST",
+        parent=None,
+    ):
         super().__init__(parent)
         self.endpoint = endpoint
         self.payload = payload
         self.debug_mode = debug_mode
+        self.method = method
 
     def run(self):
         try:
             url = f"{AGENT_BASE_URL}{self.endpoint}"
-            data = json.dumps(self.payload).encode("utf-8")
             headers = {"Content-Type": "application/json"}
             if self.debug_mode:
                 headers["X-Debug-Mode"] = "1"
+            data = None
+            if self.method == "POST":
+                data = json.dumps(self.payload or {}).encode("utf-8")
             req = urllib.request.Request(
                 url,
                 data=data,
                 headers=headers,
-                method="POST",
+                method=self.method,
             )
             with urllib.request.urlopen(req, timeout=300) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
@@ -160,10 +202,18 @@ class AgentRunner(QtCore.QObject):
     phase_changed = QtCore.Signal(str)
     execution_finished = QtCore.Signal(bool, str)  # (success, message)
     error_occurred = QtCore.Signal(str)
+    session_restored = QtCore.Signal(dict)
+    paused_state_changed = QtCore.Signal(bool)
+    # 对话式 UI
+    chat_reply = QtCore.Signal(dict)  # ChatResponse（session 元信息）
+    chat_event = QtCore.Signal(dict)  # {kind: user|assistant|thinking|system, text, meta?}
+    soft_plan_updated = QtCore.Signal(dict)
+    busy_changed = QtCore.Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.session: Optional[AgentSession] = None
+        self.chat: Optional[ChatSession] = None
         self.executor: Optional[CadToolExecutor] = None
         self.http_worker: Optional[HTTPWorker] = None
         self.auto_mode = False
@@ -174,6 +224,16 @@ class AgentRunner(QtCore.QObject):
         self.debug_step_name: Optional[str] = None
         self._before_step_state: Optional[dict] = None
         self._last_tool_call: Optional[dict] = None
+        self._last_batch_results: list[dict] = []
+        self._lifecycle_worker: Optional[HTTPWorker] = None
+        self._restore_worker: Optional[HTTPWorker] = None
+        self._chat_busy = False
+        self._capabilities: dict = {}
+        self._pending_user_message: Optional[str] = None
+        self._chat_epoch = 0  # 作废进行中的 HTTP 回调，防叠批
+        self._tool_queue: list = []
+        self._tool_results: list = []
+        self._tool_batch_epoch = 0
 
     def set_debug_mode(self, enabled: bool):
         self.debug_mode = enabled
@@ -332,8 +392,14 @@ class AgentRunner(QtCore.QObject):
         self._update_debug_info(result)
         decision = result.get("decision", "")
 
-        # Sync phase from server (may auto-advance P1→P2)
-        phase_id = result.get("phase_id")
+        if result.get("abstract_step_queue") is not None:
+            self.session.abstract_step_queue = result["abstract_step_queue"]
+        self.session.current_abstract_step = (
+            result.get("current_abstract_step") or self.session.current_abstract_step
+        )
+        # Canonical phase follows abstract step when present.
+        step = self.session.current_abstract_step
+        phase_id = (step or {}).get("step_id") or result.get("phase_id")
         if phase_id and phase_id != self.session.current_phase_id:
             self.session.current_phase_id = phase_id
             self.log_message.emit(f"→ 进入阶段: {phase_id}")
@@ -358,8 +424,6 @@ class AgentRunner(QtCore.QObject):
             self.log_message.emit(f"⚠ 未知决策类型: {decision}")
             return
 
-        self.session.current_abstract_step = result.get("current_abstract_step") or self.session.current_abstract_step
-
         # Execute tool calls
         tool_calls = result.get("tool_calls", [])
         if not tool_calls:
@@ -369,6 +433,7 @@ class AgentRunner(QtCore.QObject):
         self.log_message.emit(f"→ 执行 {len(tool_calls)} 个工具调用...")
 
         self._before_step_state = get_document_state()
+        self._last_batch_results = []
 
         # Execute each tool call
         for tool_call in tool_calls:
@@ -399,6 +464,9 @@ class AgentRunner(QtCore.QObject):
                     self.log_message.emit(f"  [error] {call_id}: {msg}")
 
                 self.session.record_tool_result(tool_call, exec_result)
+                self._last_batch_results.append(
+                    {"tool_call": tool_call, "result": exec_result}
+                )
                 try:
                     self.session.refresh_memory_from_document(get_document_state())
                 except Exception:
@@ -416,6 +484,9 @@ class AgentRunner(QtCore.QObject):
                     "call_id": call_id,
                 }
                 self.session.record_tool_result(tool_call, error_result)
+                self._last_batch_results.append(
+                    {"tool_call": tool_call, "result": error_result}
+                )
 
         # Request evaluation
         self._request_evaluation()
@@ -432,21 +503,54 @@ class AgentRunner(QtCore.QObject):
             self.error_occurred.emit(f"无法读取文档状态: {e}")
             return
 
-        # Get last history entry
-        last_entry = self.session.history[-1] if self.session.history else {}
+        # Pick the most informative entry from this batch: the first FAILED
+        # call if any (so evaluate sees the real problem), else the last one.
+        batch = self._last_batch_results or []
+        focus = None
+        for item in batch:
+            if (item.get("result") or {}).get("status") != "success":
+                focus = item
+                break
+        if focus is None and batch:
+            focus = batch[-1]
+
+        if focus:
+            focus_call = focus.get("tool_call") or {}
+            focus_result = dict(focus.get("result") or {})
+        else:
+            last_entry = self.session.history[-1] if self.session.history else {}
+            focus_call = self._last_tool_call or {
+                "call_id": last_entry.get("call_id"),
+                "tool": last_entry.get("tool"),
+            }
+            focus_result = dict(last_entry)
+
+        # Attach a compact whole-batch summary so evaluate is not blind to
+        # the other N-1 calls executed in this step.
+        if len(batch) > 1:
+            focus_result["batch_summary"] = [
+                {
+                    "call_id": (item.get("tool_call") or {}).get("call_id"),
+                    "tool": (item.get("tool_call") or {}).get("tool"),
+                    "status": (item.get("result") or {}).get("status"),
+                    "produced_objects": (item.get("result") or {}).get(
+                        "produced_objects"
+                    ),
+                    "message": (item.get("result") or {}).get("message"),
+                }
+                for item in batch
+            ]
 
         # Build evaluate request
         payload = self._debug_payload({
             "session_id": self.session.session_id,
-            "last_tool_call": self._last_tool_call or {
-                "call_id": last_entry.get("call_id"),
-                "tool": last_entry.get("tool"),
-            },
-            "execution_result": last_entry,
+            "last_tool_call": focus_call,
+            "execution_result": focus_result,
             "before_state": self._before_step_state,
             "document_state": doc_state_after,
             "execution_history": self.session.get_history_summary(),
             "session_memory": self.session.get_session_memory_pack(),
+            "name_map": self.session.name_map,
             "high_level_plan": self.session.high_level_plan,
             "current_phase_id": self.session.current_phase_id,
             "current_abstract_step": self.session.current_abstract_step,
@@ -476,17 +580,23 @@ class AgentRunner(QtCore.QObject):
 
         elif decision == "repair":
             self.log_message.emit(f"↻ 需要修复: {result.get('message', '')}")
-            # Execute repair steps
+            # Execute repair steps, then close the loop with a fresh evaluate
+            # (previously the repair result was never evaluated).
             repair_calls = result.get("repair_tool_calls", [])
             if repair_calls:
                 self.log_message.emit(f"→ 执行修复步骤 ({len(repair_calls)} 个)...")
-                # Execute repair calls (similar to normal execution)
+                self._before_step_state = get_document_state()
+                self._last_batch_results = []
                 for tool_call in repair_calls:
                     try:
+                        self._last_tool_call = tool_call
                         exec_result = self.executor.execute_tool_call(tool_call)
                         exec_result.setdefault("tool", tool_call.get("tool"))
                         exec_result.setdefault("call_id", tool_call.get("call_id", "repair"))
                         self.session.record_tool_result(tool_call, exec_result)
+                        self._last_batch_results.append(
+                            {"tool_call": tool_call, "result": exec_result}
+                        )
                         try:
                             self.session.refresh_memory_from_document(get_document_state())
                         except Exception:
@@ -498,9 +608,21 @@ class AgentRunner(QtCore.QObject):
                             self.log_message.emit(f"  [✗] 修复失败: {exec_result.get('message', '')}")
                     except Exception as e:
                         self.log_message.emit(f"  [✗] 修复异常: {e}")
-
-            # Continue after repair
-            if self.auto_mode and not self.paused and not self.stopped:
+                        self._last_batch_results.append(
+                            {
+                                "tool_call": tool_call,
+                                "result": {
+                                    "status": "error",
+                                    "message": str(e),
+                                    "tool": tool_call.get("tool"),
+                                    "call_id": tool_call.get("call_id", "repair"),
+                                },
+                            }
+                        )
+                # Evaluate the repair result before moving on
+                if not self.stopped:
+                    QtCore.QTimer.singleShot(100, self._request_evaluation)
+            elif self.auto_mode and not self.paused and not self.stopped:
                 QtCore.QTimer.singleShot(100, self.execute_next_step)
 
         elif decision == "skip_and_continue":
@@ -547,9 +669,9 @@ class AgentRunner(QtCore.QObject):
             self.session.abstract_step_queue = result["abstract_step_queue"]
         if "current_abstract_step" in result:
             self.session.current_abstract_step = result.get("current_abstract_step")
-        phase_id = result.get("updated_current_phase_id")
-        if not phase_id and self.session.current_abstract_step:
-            phase_id = self.session.current_abstract_step.get("step_id")
+        # Abstract step is authoritative; updated_current_phase_id must not drift ahead.
+        step = self.session.current_abstract_step
+        phase_id = (step or {}).get("step_id") or result.get("updated_current_phase_id")
         if phase_id and phase_id != self.session.current_phase_id:
             self.session.current_phase_id = phase_id
             self.log_message.emit(f"→ 进入下一阶段: {phase_id}")
@@ -598,21 +720,518 @@ class AgentRunner(QtCore.QObject):
         self.stopped = False
         self.execute_next_step()
 
+    def _active_session_id(self) -> Optional[str]:
+        if self.chat and self.chat.session_id:
+            return self.chat.session_id
+        if self.session:
+            return self.session.session_id
+        return None
+
     def pause(self):
-        """Pause execution."""
+        """Pause execution and persist USER_PAUSED + document snapshot."""
         self.paused = True
-        self.log_message.emit("⏸ 已暂停")
+        self.paused_state_changed.emit(True)
+        self.log_message.emit("⏸ 已暂停（状态已保存到服务端）")
+        sid = self._active_session_id()
+        if not sid:
+            return
+        try:
+            doc_state = get_document_state()
+        except Exception:
+            doc_state = None
+        payload = {"document_state": doc_state, "reason": "user_pause"}
+        self._lifecycle_worker = HTTPWorker(
+            f"/agent/session/{sid}/pause",
+            payload,
+            self.debug_mode,
+        )
+        self._lifecycle_worker.start()  # fire-and-forget
 
     def resume(self):
-        """Resume execution."""
-        if self.paused:
+        """Resume: ask server to diff document, then continue auto if needed."""
+        if not self.paused:
+            return
+        sid = self._active_session_id()
+        if not sid:
             self.paused = False
-            self.log_message.emit("▶ 继续执行...")
-            if self.auto_mode:
-                self.execute_next_step()
+            self.paused_state_changed.emit(False)
+            return
+        try:
+            doc_state = get_document_state()
+        except Exception:
+            doc_state = None
+        self._lifecycle_worker = HTTPWorker(
+            f"/agent/session/{sid}/resume",
+            {"document_state": doc_state},
+            self.debug_mode,
+        )
+        self._lifecycle_worker.request_completed.connect(self._on_resume_completed)
+        self._lifecycle_worker.request_failed.connect(
+            lambda e: self._continue_after_resume()
+        )
+        self._lifecycle_worker.start()
+
+    def _on_resume_completed(self, result: dict):
+        changes = result.get("document_changes")
+        if changes and changes.get("changed"):
+            self.log_message.emit(
+                f"⚠ 检测到暂停期间文档被手工修改: {changes.get('summary')}"
+            )
+            try:
+                if self.chat:
+                    self.chat.memory.sync_from_document(get_document_state())
+                elif self.session:
+                    self.session.refresh_memory_from_document(get_document_state())
+            except Exception:
+                pass
+            if self.chat:
+                self._emit_chat(
+                    "system",
+                    "检测到暂停期间文档有手工修改："
+                    f"{changes.get('summary') or changes}。"
+                    "已记入上下文，可继续说下一步。",
+                )
+        ckpt = result.get("checkpoint_id")
+        if ckpt:
+            self.log_message.emit(f"[runtime] checkpoint={ckpt}")
+        self._continue_after_resume()
+
+    def _continue_after_resume(self):
+        self.paused = False
+        self.paused_state_changed.emit(False)
+        self.log_message.emit("▶ 已恢复（对话模式请继续发消息，或等自动工具批继续）")
+        if self.chat:
+            # 暂停期间入队的消息，恢复后发出
+            if not self._chat_busy:
+                QtCore.QTimer.singleShot(0, self._flush_pending_user_message)
+            return
+        if self.auto_mode and not self.stopped:
+            self.execute_next_step()
+
+    def restore_session(self, session_id: str):
+        """GET /agent/session/{id} → rebuild AgentSession + executor idempotency."""
+        self.log_message.emit(f"→ 恢复会话: {session_id}...")
+        self._restore_worker = HTTPWorker(
+            f"/agent/session/{session_id}",
+            debug_mode=self.debug_mode,
+            method="GET",
+        )
+        self._restore_worker.request_completed.connect(self._on_restore_completed)
+        self._restore_worker.request_failed.connect(self._on_request_failed)
+        self._restore_worker.start()
+
+    def _on_restore_completed(self, result: dict):
+        if result.get("status") != "ok":
+            self.error_occurred.emit(f"恢复失败: {result.get('message')}")
+            return
+        session_id = result.get("session_id") or ""
+        run_state = result.get("run_state") or {}
+        plan = dict(run_state.get("high_level_plan") or {})
+        plan.setdefault("session_id", session_id)
+        if not plan.get("phases") and plan.get("abstract_step_queue"):
+            # Prefer queue steps as phase view when plan payload is thin
+            pass
+        user_input = result.get("user_input") or plan.get("user_input") or ""
+        self.session = AgentSession(user_input=user_input, high_level_plan=plan)
+        self.session.session_id = session_id
+        self.session.abstract_step_queue = run_state.get("abstract_step_queue")
+        self.session.current_abstract_step = run_state.get("current_abstract_step")
+        self.session.current_phase_id = (
+            run_state.get("current_phase_id") or self.session.current_phase_id
+        )
+        self.session.name_map = dict(run_state.get("name_map") or {})
+        self.session.memory.restore_from_pack(run_state.get("session_memory"))
+        try:
+            self.executor = CadToolExecutor()
+        except RuntimeError as e:
+            self.error_occurred.emit(f"初始化执行器失败: {e}")
+            return
+        self.executor.name_map = dict(self.session.name_map)
+        self.executor.seed_completed_call_ids(result.get("completed_action_ids"))
+        try:
+            self.session.refresh_memory_from_document(get_document_state())
+        except Exception:
+            pass
+        self.paused = False
+        self.stopped = False
+        self.log_message.emit(f"✓ 会话已恢复: {self.session.session_id}")
+        # Trigger resume endpoint so server diffs against last pause snapshot
+        self.paused = True
+        self.session_restored.emit(result)
+        self.resume()
+
+    def answer_and_continue(self, answer: str):
+        """Append user clarification and continue the closed loop."""
+        if not self.session:
+            self.error_occurred.emit("No session")
+            return
+        answer = (answer or "").strip()
+        if not answer:
+            self.error_occurred.emit("回答为空")
+            return
+        self.session.user_input = (
+            f"{self.session.user_input}\n[用户补充] {answer}"
+        )
+        self.paused = False
+        self.stopped = False
+        self.log_message.emit(f"← 用户补充: {answer[:120]}")
+        self.execute_next_step()
 
     def stop(self):
-        """Stop execution."""
+        """Stop execution. In-flight chat 作废；若有排队消息则随后发出。"""
         self.stopped = True
+        self.paused = False
+        self.paused_state_changed.emit(False)
+        self._chat_epoch += 1  # 丢弃进行中的 HTTP 回调 / 工具队列
+        self._tool_queue = []
+        self._tool_results = []
         self.log_message.emit("⏹ 已停止")
         self.execution_finished.emit(False, "用户停止")
+        self._set_chat_busy(False)  # → 刷新排队消息
+
+    # ── 对话式主循环（Cursor / Claude Code 形态）──────────────────
+
+    def fetch_capabilities(self):
+        worker = HTTPWorker("/agent/capabilities", method="GET", parent=self)
+        worker.request_completed.connect(self._on_capabilities)
+        worker.request_failed.connect(lambda e: self.log_message.emit(f"能力探测失败: {e}"))
+        worker.start()
+        self._lifecycle_worker = worker
+
+    def _on_capabilities(self, result: dict):
+        self._capabilities = result or {}
+        vision = (result or {}).get("vision") or {}
+        self.log_message.emit(
+            f"服务端: chat={result.get('chat')} vision_available={vision.get('available')} "
+            f"plan_default={result.get('plan_mode_default')}"
+        )
+        if self.chat is not None and not vision.get("available"):
+            # 服务端不可用时不要假装开着
+            self.chat.vision_enabled = False
+
+    def set_plan_mode(self, enabled: bool):
+        if self.chat is None:
+            self.chat = ChatSession()
+        self.chat.plan_mode = bool(enabled)
+
+    def set_vision_enabled(self, enabled: bool):
+        if self.chat is None:
+            self.chat = ChatSession()
+        vision = (self._capabilities or {}).get("vision") or {}
+        if enabled and self._capabilities and not vision.get("available", True):
+            self.log_message.emit("视觉辅助不可用：检查 VISION_ENABLED / VISION_MODEL")
+            self.chat.vision_enabled = False
+            return
+        self.chat.vision_enabled = bool(enabled)
+
+    def _emit_chat(self, kind: str, text: str, **meta):
+        text = (text or "").strip()
+        if not text:
+            return
+        self.chat_event.emit({"kind": kind, "text": text, "meta": meta or {}})
+
+    def send_chat(self, message: str):
+        """用户发消息。忙时入队，等当前轮结束或用户点停止后再发（不叠 HTTP）。"""
+        message = (message or "").strip()
+        if not message:
+            self.error_occurred.emit("消息为空")
+            return
+        if self.chat is None:
+            self.chat = ChatSession(user_goal=message)
+        elif not self.chat.user_goal:
+            self.chat.user_goal = message
+        if self.executor is None:
+            self.executor = CadToolExecutor()
+
+        self._emit_chat("user", message)
+
+        if self._chat_busy:
+            self._enqueue_user_message(message)
+            self.log_message.emit(f"… 已排队（当前轮结束后发送）: {message[:60]}")
+            self._emit_chat(
+                "thinking",
+                "已排队：当前任务结束后发送（或点停止提前结束）",
+                label="queue",
+            )
+            self.chat_reply.emit(
+                {
+                    "status": "queued",
+                    "session_id": self.chat.session_id or "",
+                    "message": "",
+                    "tool_calls": [],
+                }
+            )
+            return
+
+        self.stopped = False
+        self.paused = False
+        self._post_chat(message=message, tool_results=None)
+
+    def _enqueue_user_message(self, message: str):
+        if self._pending_user_message:
+            self._pending_user_message = f"{self._pending_user_message}\n\n{message}"
+        else:
+            self._pending_user_message = message
+
+    def _flush_pending_user_message(self):
+        """busy 降为 False 后调用：发出排队中的用户消息。"""
+        if self._chat_busy or self.paused:
+            return
+        pending = (self._pending_user_message or "").strip()
+        if not pending:
+            return
+        self._pending_user_message = None
+        self.stopped = False
+        self.log_message.emit(f"→ 发送排队消息: {pending[:80]}")
+        self._post_chat(message=pending, tool_results=None)
+
+    def compress_chat_context(self, keep_recent_turns: int = 4):
+        if not self.chat or not self.chat.session_id:
+            self.error_occurred.emit("没有可压缩的会话")
+            return
+        if self._chat_busy:
+            self.error_occurred.emit("当前轮未结束，请稍后再压缩上下文")
+            return
+        payload = {
+            "session_id": self.chat.session_id,
+            "keep_recent_turns": keep_recent_turns,
+            "debug_mode": self.debug_mode,
+        }
+        self.log_message.emit("→ 压缩上下文…")
+        self._chat_epoch += 1
+        epoch = self._chat_epoch
+        self._set_chat_busy(True)
+        worker = HTTPWorker("/agent/compress", payload, self.debug_mode, parent=self)
+        worker.request_completed.connect(
+            lambda r, e=epoch: self._on_compress_done(r, e)
+        )
+        worker.request_failed.connect(lambda err, e=epoch: self._on_chat_failed(err, e))
+        self.http_worker = worker
+        worker.start()
+
+    def _on_compress_done(self, result: dict, epoch: int = 0):
+        if epoch and epoch != self._chat_epoch:
+            return
+        self._set_chat_busy(False)
+        msg = result.get("message") or "压缩完成"
+        self.log_message.emit(f"✓ {msg}")
+        self._emit_chat("system", msg)
+        self.chat_reply.emit(
+            {
+                "status": "awaiting_user",
+                "session_id": (self.chat.session_id if self.chat else ""),
+                "message": "",
+                "tool_calls": [],
+                "context_chars": result.get("context_chars", 0),
+                "turn_count": result.get("turn_count", 0),
+            }
+        )
+
+    def _post_chat(self, *, message: str = "", tool_results=None):
+        try:
+            doc_state = get_document_state()
+        except Exception as e:
+            self.error_occurred.emit(f"无法读取文档状态: {e}")
+            self._set_chat_busy(False)
+            return
+
+        viewport = None
+        if self.chat and self.chat.vision_enabled:
+            viewport = capture_viewport(1024)
+            if viewport:
+                self.log_message.emit("→ 已截取视口供视觉检查")
+
+        memory = None
+        if self.chat:
+            try:
+                self.chat.memory.sync_from_document(doc_state)
+                memory = self.chat.memory.build_pack()
+            except Exception:
+                memory = None
+
+        payload = {
+            "session_id": self.chat.session_id if self.chat else None,
+            "message": message or "",
+            "document_state": doc_state,
+            "tool_results": tool_results or [],
+            "viewport_image": viewport,
+            "plan_mode": self.chat.plan_mode if self.chat else True,
+            "vision_enabled": self.chat.vision_enabled if self.chat else False,
+            "session_memory": memory,
+            "name_map": dict(self.chat.name_map) if self.chat else {},
+            "soft_plan": self.chat.soft_plan if self.chat else None,
+            "user_goal": self.chat.user_goal if self.chat else "",
+            "debug_mode": self.debug_mode,
+        }
+        self._chat_epoch += 1
+        epoch = self._chat_epoch
+        self._set_chat_busy(True)
+        preview = (message or "（回传工具结果）")[:80]
+        self.log_message.emit(f"→ chat: {preview}")
+        worker = HTTPWorker("/agent/chat", payload, self.debug_mode, parent=self)
+        worker.request_completed.connect(
+            lambda r, e=epoch: self._on_chat_response(r, e)
+        )
+        worker.request_failed.connect(lambda err, e=epoch: self._on_chat_failed(err, e))
+        self.http_worker = worker
+        worker.start()
+
+    def _on_chat_failed(self, err: str, epoch: int = 0):
+        if epoch and epoch != self._chat_epoch:
+            return
+        self._set_chat_busy(False)
+        self.error_occurred.emit(err)
+
+    def _on_chat_response(self, result: dict, epoch: int = 0):
+        if epoch and epoch != self._chat_epoch:
+            self.log_message.emit("（忽略过期的 chat 响应）")
+            return
+        self._update_debug_info(result)
+        if not self.chat:
+            self.chat = ChatSession()
+        sid = result.get("session_id")
+        if sid:
+            self.chat.session_id = sid
+
+        self._publish_chat_response(result)
+        self.chat_reply.emit(result)
+
+        status = result.get("status", "")
+        tool_calls = result.get("tool_calls") or []
+
+        if self.stopped or self.paused:
+            self._set_chat_busy(False)
+            return
+
+        if status == "awaiting_tools" and tool_calls:
+            self._execute_chat_tools(tool_calls)
+            return
+
+        self._set_chat_busy(False)
+        if status == "done":
+            self.execution_finished.emit(True, result.get("message") or "完成")
+        elif status == "error":
+            self.error_occurred.emit(result.get("message") or "chat error")
+
+    def _publish_chat_response(self, result: dict):
+        """把一轮 ChatResponse 拆成 transcript 事件：thinking + 正式回复。"""
+        if result.get("soft_plan") is not None:
+            self.chat.soft_plan = result.get("soft_plan")
+            self.soft_plan_updated.emit(self.chat.soft_plan or {})
+            plan_text = _format_soft_plan(self.chat.soft_plan)
+            if plan_text:
+                self._emit_chat("thinking", plan_text, label="plan")
+
+        vision = result.get("vision") or {}
+        if vision and not vision.get("skipped"):
+            vline = f"{vision.get('verdict')}: {vision.get('summary') or ''}".strip()
+            issues = vision.get("issues") or []
+            if issues:
+                vline += "\n" + "\n".join(f"- {i}" for i in issues[:6])
+            self._emit_chat("thinking", vline, label="vision")
+
+        tool_calls = result.get("tool_calls") or []
+        if tool_calls:
+            lines = []
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                desc = tc.get("description") or ""
+                lines.append(f"{tc.get('call_id') or ''} {tc.get('tool')} {desc}".strip())
+            self._emit_chat("thinking", "\n".join(lines), label="tools")
+
+        msg = (result.get("message") or "").strip()
+        if result.get("question"):
+            msg = (msg + "\n\n" + result["question"]).strip() if msg else result["question"]
+        if msg:
+            self._emit_chat("assistant", msg)
+        elif result.get("status") == "error":
+            self._emit_chat("system", result.get("message") or "错误")
+
+    def _execute_chat_tools(self, tool_calls: list):
+        """逐个执行工具：每做完一个用 QTimer 让出事件循环，避免 GUI 假死。"""
+        if self.executor is None:
+            self.executor = CadToolExecutor()
+        self._tool_queue = [tc if isinstance(tc, dict) else {} for tc in (tool_calls or [])]
+        self._tool_results = []
+        self._tool_batch_epoch = self._chat_epoch
+        self.log_message.emit(f"→ 执行 {len(self._tool_queue)} 个工具（逐个让出 UI）…")
+        QtCore.QTimer.singleShot(0, self._run_next_chat_tool)
+
+    def _run_next_chat_tool(self):
+        if self._tool_batch_epoch != self._chat_epoch:
+            return  # 已被 stop / 新一轮 chat 作废
+        if self.stopped or self.paused:
+            self._tool_queue = []
+            self._tool_results = []
+            self._set_chat_busy(False)
+            return
+        if not self._tool_queue:
+            results = list(self._tool_results)
+            self._tool_results = []
+            self._post_chat(message="", tool_results=results)
+            return
+
+        call = self._tool_queue.pop(0)
+        tool = call.get("tool") or "?"
+        desc = call.get("description") or ""
+        self.log_message.emit(f"⚙ {tool} {desc}")
+        self._emit_chat("thinking", f"→ {tool} {desc}".strip(), label="tool")
+        try:
+            exec_result = self.executor.execute_tool_call(call)
+        except Exception as e:
+            exec_result = {
+                "status": "error",
+                "message": str(e),
+                "call_id": call.get("call_id"),
+                "tool": call.get("tool"),
+            }
+        status = exec_result.get("status", "?")
+        produced = exec_result.get("produced_objects") or []
+        if status == "success":
+            detail = f"✓ {tool}"
+            if produced:
+                detail += f" → {', '.join(map(str, produced))}"
+        else:
+            detail = f"✗ {tool}: {exec_result.get('message') or status}"
+        self._emit_chat("thinking", detail, label="tool")
+
+        name_map_update = exec_result.get("name_map_update") or {}
+        if name_map_update and self.chat:
+            self.chat.name_map.update(name_map_update)
+            self.executor.name_map = dict(self.chat.name_map)
+        if self.chat:
+            try:
+                self.chat.memory.update_from_tool(
+                    call, exec_result, name_map=self.chat.name_map
+                )
+            except Exception:
+                pass
+        self._tool_results.append({"tool_call": call, "execution_result": exec_result})
+        self._log_tool_execution(call, exec_result)
+
+        # 让出一帧：处理重绘 / 点击停止，再跑下一个
+        try:
+            QtGui.QApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)
+        except Exception:
+            pass
+        QtCore.QTimer.singleShot(0, self._run_next_chat_tool)
+
+    def _set_chat_busy(self, busy: bool):
+        was = self._chat_busy
+        self._chat_busy = busy
+        self.busy_changed.emit(busy)
+        # 当前轮真正空闲后再发排队消息（暂停中不发）
+        if was and not busy and not self.paused:
+            QtCore.QTimer.singleShot(0, self._flush_pending_user_message)
+
+    def new_chat(self):
+        """开新对话（新 session），文档不变。"""
+        self.stopped = True
+        self._chat_epoch += 1
+        self._pending_user_message = None
+        self.chat = ChatSession()
+        self.executor = CadToolExecutor()
+        self._set_chat_busy(False)
+        self.log_message.emit("— 新对话 —")
+        self._emit_chat("system", "新对话已开始（文档保留，上下文清空）")

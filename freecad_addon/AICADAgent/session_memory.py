@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 RECENT_EVENTS_MAX = 5
+CURRENT_PHASE_EVENTS_MAX = 40
+PHASE_CONCLUSIONS_MAX = 12
 COMPLETED_SUMMARY_MAX = 12
 
 TARGET_FIELDS = (
@@ -28,6 +30,86 @@ def _extract_target(tool_call: dict) -> str | None:
     return None
 
 
+def _normalize_bbox(bbox: Any) -> dict | None:
+    if not isinstance(bbox, dict) or not bbox:
+        return None
+    if bbox.get("size") and bbox.get("center"):
+        return {
+            "size": list(bbox["size"]),
+            "center": list(bbox["center"]),
+            "xmin": bbox.get("xmin"),
+            "xmax": bbox.get("xmax"),
+            "ymin": bbox.get("ymin"),
+            "ymax": bbox.get("ymax"),
+            "zmin": bbox.get("zmin"),
+            "zmax": bbox.get("zmax"),
+        }
+    if all(k in bbox for k in ("x", "y", "z")):
+        try:
+            xmin, xmax = float(bbox["x"][0]), float(bbox["x"][1])
+            ymin, ymax = float(bbox["y"][0]), float(bbox["y"][1])
+            zmin, zmax = float(bbox["z"][0]), float(bbox["z"][1])
+        except (TypeError, ValueError, IndexError, KeyError):
+            return None
+        return {
+            "xmin": xmin,
+            "xmax": xmax,
+            "ymin": ymin,
+            "ymax": ymax,
+            "zmin": zmin,
+            "zmax": zmax,
+            "size": [xmax - xmin, ymax - ymin, zmax - zmin],
+            "center": [(xmin + xmax) / 2, (ymin + ymax) / 2, (zmin + zmax) / 2],
+        }
+    keys = ("xmin", "xmax", "ymin", "ymax", "zmin", "zmax")
+    if all(k in bbox for k in keys):
+        try:
+            xmin, xmax = float(bbox["xmin"]), float(bbox["xmax"])
+            ymin, ymax = float(bbox["ymin"]), float(bbox["ymax"])
+            zmin, zmax = float(bbox["zmin"]), float(bbox["zmax"])
+        except (TypeError, ValueError):
+            return None
+        return {
+            "xmin": xmin,
+            "xmax": xmax,
+            "ymin": ymin,
+            "ymax": ymax,
+            "zmin": zmin,
+            "zmax": zmax,
+            "size": [xmax - xmin, ymax - ymin, zmax - zmin],
+            "center": [(xmin + xmax) / 2, (ymin + ymax) / 2, (zmin + zmax) / 2],
+        }
+    return None
+
+
+def _extract_spatial_facts(query_result: dict | None) -> dict:
+    if not isinstance(query_result, dict):
+        return {}
+    facts: dict[str, Any] = {}
+    bbox = _normalize_bbox(query_result.get("bbox"))
+    if bbox:
+        facts["bbox"] = bbox
+        facts["size"] = bbox["size"]
+        facts["center"] = bbox["center"]
+    for obj in query_result.get("objects") or []:
+        if not isinstance(obj, dict):
+            continue
+        nested = _normalize_bbox(obj.get("bbox"))
+        if nested:
+            facts.setdefault("bbox", nested)
+            facts.setdefault("size", nested["size"])
+            facts.setdefault("center", nested["center"])
+            break
+        if obj.get("size") and obj.get("center"):
+            facts.setdefault("size", obj["size"])
+            facts.setdefault("center", obj["center"])
+            break
+    topo = query_result.get("topology") or {}
+    if isinstance(topo, dict) and topo.get("volume") is not None:
+        facts["volume"] = topo.get("volume")
+    return facts
+
+
 def _summarize_query_result(query_result: dict | None) -> str:
     if not query_result:
         return ""
@@ -40,17 +122,21 @@ def _summarize_query_result(query_result: dict | None) -> str:
     obj_type = query_result.get("type")
     if obj_type:
         parts.append(f"type={obj_type}")
-    bbox = query_result.get("bbox") or {}
-    size = bbox.get("size")
-    if size:
-        parts.append(f"size={size}")
-    center = bbox.get("center")
-    if center:
-        parts.append(f"center={center}")
+    facts = _extract_spatial_facts(query_result)
+    if facts.get("size"):
+        parts.append(f"size={facts['size']}")
+    if facts.get("center"):
+        parts.append(f"center={facts['center']}")
+    if facts.get("volume") is not None:
+        parts.append(f"volume={facts['volume']}")
     placement = query_result.get("placement") or {}
     base = placement.get("base")
     if base:
         parts.append(f"pos={base}")
+    if query_result.get("face_count") is not None:
+        parts.append(f"faces={query_result['face_count']}")
+    if query_result.get("edge_count") is not None:
+        parts.append(f"edges={query_result['edge_count']}")
     message = query_result.get("message")
     if message:
         parts.append(str(message))
@@ -65,6 +151,8 @@ def _summarize_query_result(query_result: dict | None) -> str:
         names = [obj.get("name") for obj in objects if isinstance(obj, dict) and obj.get("name")]
         if names:
             parts.append(f"objects={', '.join(names[:8])}")
+    if not facts.get("size"):
+        parts.append("spatial_facts=incomplete")
     return "; ".join(parts) or "query ok"
 
 
@@ -108,6 +196,8 @@ class SessionMemory:
         self.query_cache: dict[str, dict] = {}
         self.error_memory: dict[str, Any] = {}
         self.recent_events: list[dict] = []
+        self.phase_events: list[dict] = []
+        self.phase_conclusions: list[dict] = []
         self.completed_summaries: list[str] = []
         self.pending_summaries: list[str] = []
         self.progress: dict[str, Any] = {}
@@ -148,11 +238,20 @@ class SessionMemory:
         evaluate_message: str | None = None,
     ):
         progress = dict(self.progress)
-        if current_phase_id:
-            progress["current_phase_id"] = current_phase_id
+        prev_phase = progress.get("current_phase_id")
+        # Prefer abstract-step id when both are present (keeps phase window coherent).
+        step_id = None
         if current_abstract_step:
-            progress["current_step_id"] = current_abstract_step.get("step_id")
-            progress["current_step_title"] = current_abstract_step.get("title") or current_abstract_step.get("intent")
+            step_id = current_abstract_step.get("step_id")
+            progress["current_step_id"] = step_id
+            progress["current_step_title"] = (
+                current_abstract_step.get("title") or current_abstract_step.get("intent")
+            )
+        next_phase = step_id or current_phase_id
+        if next_phase and prev_phase and next_phase != prev_phase:
+            self._seal_phase(prev_phase, evaluate_message)
+        if next_phase:
+            progress["current_phase_id"] = next_phase
         if abstract_step_queue:
             steps = abstract_step_queue.get("steps") or []
             completed = [s for s in steps if s.get("status") == "completed"]
@@ -219,23 +318,31 @@ class SessionMemory:
         else:
             self._update_error_memory(tool_call, exec_result, phase_id)
 
-        self._push_recent_event({
+        event = {
             "call_id": call_id,
             "tool": tool_name,
             "status": status,
             "target": target,
-            "phase_id": phase_id,
+            "phase_id": phase_id or (self.progress or {}).get("current_phase_id"),
             "message": exec_result.get("message"),
             "kind": exec_result.get("kind") or ("query" if tool_name.startswith("get_") else "act"),
             "produced_objects": exec_result.get("produced_objects") or [],
-        })
+        }
+        self._push_recent_event(event)
+        self._push_phase_event(event)
 
     def update_from_evaluate(self, evaluate_result: dict, high_level_plan: dict | None = None):
         message = evaluate_result.get("message")
         phase_status = evaluate_result.get("phase_status")
-        phase_id = evaluate_result.get("updated_current_phase_id") or evaluate_result.get("phase_id")
+        step = evaluate_result.get("current_abstract_step")
+        phase_id = (
+            (step or {}).get("step_id")
+            or evaluate_result.get("updated_current_phase_id")
+            or evaluate_result.get("phase_id")
+        )
         if phase_status == "completed" and message:
-            summary = f"{phase_id or '当前阶段'}: {message}"
+            # Prefer sealing under the previous phase id inside update_progress.
+            summary = f"{(self.progress or {}).get('current_phase_id') or phase_id or '当前阶段'}: {message}"
             if summary not in self.completed_summaries:
                 self.completed_summaries.append(summary)
                 self.completed_summaries = self.completed_summaries[-COMPLETED_SUMMARY_MAX:]
@@ -245,16 +352,39 @@ class SessionMemory:
             self.pending_summaries = self.pending_summaries[-5:]
         self.update_progress(
             current_phase_id=phase_id,
-            current_abstract_step=evaluate_result.get("current_abstract_step"),
+            current_abstract_step=step,
             abstract_step_queue=evaluate_result.get("abstract_step_queue"),
             high_level_plan=high_level_plan,
             evaluate_message=message,
         )
 
+    def restore_from_pack(self, pack: dict | None):
+        """Rebuild memory from a previously built pack (session recovery)."""
+        if not isinstance(pack, dict):
+            return
+        if isinstance(pack.get("object_memory"), dict):
+            self.object_memory = dict(pack["object_memory"])
+        if isinstance(pack.get("query_cache"), dict):
+            self.query_cache = dict(pack["query_cache"])
+        if isinstance(pack.get("error_memory"), dict):
+            self.error_memory = dict(pack["error_memory"])
+        if isinstance(pack.get("recent_events"), list):
+            self.recent_events = list(pack["recent_events"])
+        if isinstance(pack.get("phase_events"), list):
+            self.phase_events = list(pack["phase_events"])
+        if isinstance(pack.get("phase_conclusions"), list):
+            self.phase_conclusions = list(pack["phase_conclusions"])
+        if isinstance(pack.get("progress"), dict):
+            self.progress = dict(pack["progress"])
+        if pack.get("current_target"):
+            self.current_target = pack["current_target"]
+
     def build_pack(self) -> dict:
         return {
             "working_summary": self._build_working_summary(),
             "recent_events": list(self.recent_events[-RECENT_EVENTS_MAX:]),
+            "phase_events": list(self.phase_events[-CURRENT_PHASE_EVENTS_MAX:]),
+            "phase_conclusions": list(self.phase_conclusions[-PHASE_CONCLUSIONS_MAX:]),
             "object_memory": dict(self.object_memory),
             "error_memory": dict(self.error_memory),
             "query_cache": self._compact_query_cache(),
@@ -262,6 +392,32 @@ class SessionMemory:
             "long_summary": self._build_long_summary(),
             "current_target": self.current_target,
         }
+
+    def _seal_phase(self, phase_id: str, message: str | None = None):
+        """Compress current-phase trajectory into a short conclusion, then reset."""
+        if not phase_id:
+            return
+        produced: list[str] = []
+        for entry in self.phase_events:
+            for name in entry.get("produced_objects") or []:
+                if name and name not in produced:
+                    produced.append(name)
+        ops = len(self.phase_events)
+        summary = (message or "").strip() or f"{phase_id} 完成（{ops} 次操作）"
+        if not summary.startswith(str(phase_id)):
+            summary = f"{phase_id}: {summary}"
+        self.phase_conclusions.append({
+            "phase_id": phase_id,
+            "summary": summary,
+            "produced": produced[:12],
+            "ops": ops,
+        })
+        self.phase_conclusions = self.phase_conclusions[-PHASE_CONCLUSIONS_MAX:]
+        self.phase_events = []
+
+    def _push_phase_event(self, entry: dict):
+        self.phase_events.append(dict(entry))
+        self.phase_events = self.phase_events[-CURRENT_PHASE_EVENTS_MAX:]
 
     def _update_query_cache(
         self,
@@ -288,6 +444,7 @@ class SessionMemory:
             targets.append("__document__")
 
         summary = _summarize_query_result(query_result)
+        facts = _extract_spatial_facts(query_result)
         for tgt in dict.fromkeys(targets):
             self.query_cache[tgt] = {
                 "tool": tool_name,
@@ -295,7 +452,18 @@ class SessionMemory:
                 "step_id": phase_id,
                 "summary": summary,
                 "query_result": query_result,
+                "has_spatial_facts": bool(facts.get("size") and facts.get("center")),
+                "size": facts.get("size"),
+                "center": facts.get("center"),
             }
+            # Propagate usable size/center into object index
+            if tgt != "__document__" and facts.get("size"):
+                entry = self.object_memory.setdefault(tgt, {})
+                entry["size"] = facts["size"]
+                if facts.get("center"):
+                    entry["center"] = facts["center"]
+                entry.setdefault("status", "queried")
+                entry.setdefault("role", _infer_role(tgt))
 
     def _update_objects_from_success(self, tool_call: dict, exec_result: dict, phase_id: str | None):
         produced = list(exec_result.get("produced_objects") or [])
@@ -362,6 +530,9 @@ class SessionMemory:
                 "call_id": item.get("call_id"),
                 "step_id": item.get("step_id"),
                 "summary": item.get("summary"),
+                "has_spatial_facts": item.get("has_spatial_facts", False),
+                "size": item.get("size"),
+                "center": item.get("center"),
             }
         return compact
 

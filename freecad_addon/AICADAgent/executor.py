@@ -30,6 +30,19 @@ class CadToolExecutor:
         if self.doc is None:
             raise RuntimeError("No active FreeCAD document")
         self.name_map: dict[str, str] = {}
+        # Idempotency: call_ids that already produced side effects.
+        # Replaying the same call_id (retry / resume) is a no-op.
+        self._completed_call_ids: set[str] = set()
+        self._completed_results: dict[str, dict] = {}
+
+    def seed_completed_call_ids(self, call_ids):
+        """Mark call_ids as already executed (e.g. restored from server events)."""
+        for cid in call_ids or []:
+            if cid:
+                self._completed_call_ids.add(str(cid))
+
+    def has_executed(self, call_id: str) -> bool:
+        return bool(call_id) and str(call_id) in self._completed_call_ids
 
     def _resolve(self, name: str) -> str:
         """Follow the name chain to the latest object name."""
@@ -84,6 +97,27 @@ class CadToolExecutor:
         tool_name = tool_call.get("tool", "")
         args = tool_call.get("args", {})
 
+        # Idempotency guard: never re-run a call_id that already succeeded.
+        # Query tools are safe to re-run; only act tools are deduplicated.
+        if self.has_executed(call_id):
+            cached = self._completed_results.get(str(call_id))
+            if cached is not None:
+                result = dict(cached)
+                result["skipped_duplicate"] = True
+                return result
+            return {
+                "call_id": call_id,
+                "status": "success",
+                "tool": tool_name,
+                "args": args,
+                "resolved_args": args,
+                "produced_objects": [],
+                "source_objects": [],
+                "name_map_update": {},
+                "message": "duplicate call_id — already executed, skipped",
+                "skipped_duplicate": True,
+            }
+
         tool_func = TOOL_REGISTRY.get(tool_name)
         if tool_func is None:
             return {
@@ -126,7 +160,7 @@ class CadToolExecutor:
 
             self._commit()
 
-            return {
+            final = {
                 "call_id": call_id,
                 "status": "success",
                 "tool": tool_name,
@@ -141,6 +175,11 @@ class CadToolExecutor:
                     "produced_objects", "source_objects", "name_map_update", "message"
                 ]}
             }
+            # Register act (non-query) side effects for idempotent replay
+            if not is_query and call_id:
+                self._completed_call_ids.add(str(call_id))
+                self._completed_results[str(call_id)] = final
+            return final
         except Exception as e:
             try:
                 self._rollback()

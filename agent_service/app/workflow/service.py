@@ -1,45 +1,43 @@
+"""The whole closed-loop workflow, as plain Python (no LangGraph).
+
+Read top-down:
+  start_plan   → build phases + abstract step queue (queue built ONCE)
+  next_step    → LLM tool calls → validate specs → maybe prepend queries
+  evaluate_step→ deterministic checks → validators → LLM → advance queue
+                 → normalize decision (ONLY here)
+
+Legacy V0.1 plan retry lives in `legacy_plan()` (was build_cad_graph).
 """
-LangGraph node functions for the CAD Agent workflow.
+from __future__ import annotations
 
-V0.1-V0.6 nodes:
-  parse_input_node  — validate input, prepare document state summary
-  plan_node         — generate plan via LLM (with retry context)
-  validate_plan_node— structural validation against TOOL_SPECS
-
-V0.7 nodes (closed-loop architecture):
-  generate_high_level_plan_node — generate phase-level plan
-  validate_high_level_plan_node — validate high-level plan structure
-  plan_next_step_node           — generate next tool calls
-  validate_next_step_node       — validate next step tool calls
-  evaluate_step_node            — evaluate execution result + deterministic checks
-"""
-
-from app.graph.state import AgentState
-from app.llm.planner import (
-    generate_plan,
-    generate_high_level_plan,
-    generate_next_tool_calls,
-    evaluate_step_result,
-)
-from app.tools.tool_specs import TOOL_SPECS
-from app.tools.query_policy import (
-    build_required_query_calls,
-    is_query_tool,
-    validate_query_before_act,
-)
 from app.abstract_steps.planner import (
+    build_queue_from_high_level_plan,
     resolve_current_abstract_step,
     is_queue_exhausted,
-    build_queue_from_high_level_plan,
 )
 from app.evaluation.harness import (
     apply_abstract_step_advancement,
     should_advance_abstract_step,
     resolve_validator_names,
 )
+from app.evaluation.phases import normalize_evaluate_decision
+from app.llm.planner import (
+    generate_plan,
+    generate_high_level_plan,
+    generate_next_tool_calls,
+    evaluate_step_result,
+)
+from app.tools.query_policy import (
+    build_required_query_calls,
+    is_query_tool,
+    validate_query_before_act,
+)
+from app.tools.tool_specs import TOOL_SPECS
 
 
-def _sanitize_tool_calls(calls: list | None, prefix: str = "repair") -> list[dict]:
+# ── shared helpers (moved from graph/nodes.py) ─────────────────────
+
+def sanitize_tool_calls(calls: list | None, prefix: str = "repair") -> list[dict]:
     """Ensure tool calls satisfy ToolCall schema (call_id required)."""
     sanitized = []
     for i, call in enumerate(calls or []):
@@ -55,143 +53,6 @@ def _sanitize_tool_calls(calls: list | None, prefix: str = "repair") -> list[dic
     return sanitized
 
 
-def parse_input_node(state: AgentState) -> dict:
-    """Parse and normalize user input, initialize retry state."""
-    user_input = state.get("user_input", "").strip()
-
-    updates: dict = {
-        "retry_count": 0,
-        "validation_errors": [],
-    }
-
-    if not user_input:
-        updates["status"] = "error"
-        updates["error_message"] = "用户输入为空"
-    else:
-        updates["status"] = "parsed"
-        updates["error_message"] = None
-
-    return updates
-
-
-def plan_node(state: AgentState) -> dict:
-    """Generate a modeling plan. On retry, include previous errors for self-correction."""
-    retry_count = state.get("retry_count", 0)
-    validation_errors = state.get("validation_errors", [])
-
-    # On retry, append error context to user input so LLM can self-correct
-    user_input = state["user_input"]
-    if retry_count > 0 and validation_errors:
-        error_context = "\n\n[系统反馈] 上一次生成的计划存在以下问题，请修正后重新生成：\n"
-        for err in validation_errors:
-            error_context += f"- {err}\n"
-        user_input = state["user_input"] + error_context
-
-    result = generate_plan(user_input, state.get("document_state"))
-
-    return {
-        "plan_json": result,
-        "status": "planned",
-    }
-
-
-def validate_plan_node(state: AgentState) -> dict:
-    """Validate the generated plan against tool specs."""
-    plan_json = state.get("plan_json")
-
-    if not plan_json:
-        return {
-            "status": "error",
-            "error_message": "未能生成计划",
-            "validation_errors": ["plan_json 为空"],
-        }
-
-    # If LLM already said need_more_info, skip structural validation
-    if plan_json.get("status") == "need_more_info":
-        return {
-            "status": "need_more_info",
-            "validation_errors": [],
-        }
-
-    errors = _validate_plan(plan_json)
-
-    if errors:
-        return {
-            "status": "validation_failed",
-            "validation_errors": errors,
-            "error_message": "; ".join(errors),
-        }
-
-    return {
-        "status": "ok",
-        "validation_errors": [],
-    }
-
-
-# ── Validation helpers ──────────────────────────────────────────────
-
-def _validate_plan(plan_json: dict) -> list[str]:
-    """Validate plan structure and tool calls against TOOL_SPECS."""
-    errors: list[str] = []
-    steps = plan_json.get("plan", [])
-
-    if not isinstance(steps, list):
-        return ["plan 字段必须是列表"]
-
-    step_ids: set[str] = set()
-
-    for i, step in enumerate(steps):
-        if not isinstance(step, dict):
-            errors.append(f"步骤 {i + 1}: 必须是字典")
-            continue
-
-        step_id = step.get("step_id", f"step_{i + 1}")
-        tool = step.get("tool", "")
-        args = step.get("args", {})
-
-        # Duplicate step_id
-        if step_id in step_ids:
-            errors.append(f"步骤 {step_id}: 重复的 step_id")
-        step_ids.add(step_id)
-
-        # Tool name validation
-        if not tool:
-            errors.append(f"步骤 {step_id}: 缺少 tool 字段")
-            continue
-
-        if tool not in TOOL_SPECS:
-            valid = ", ".join(TOOL_SPECS.keys())
-            errors.append(f"步骤 {step_id}: 未知工具 '{tool}'，可用工具: {valid}")
-            continue
-
-        spec = TOOL_SPECS[tool]
-
-        # Required params
-        for req in spec.get("required", []):
-            if req not in args:
-                errors.append(f"步骤 {step_id}: 工具 '{tool}' 缺少必填参数 '{req}'")
-
-        # Basic type check for provided params
-        params_spec = spec.get("parameters", {})
-        for arg_name, arg_value in args.items():
-            if arg_name in params_spec:
-                expected_type = params_spec[arg_name].get("type", "")
-                if not _check_type(arg_value, expected_type):
-                    errors.append(
-                        f"步骤 {step_id}: 参数 '{arg_name}' 期望类型 {expected_type}，"
-                        f"实际为 {type(arg_value).__name__}"
-                    )
-
-        # Dependency validation
-        depends_on = step.get("depends_on", [])
-        if isinstance(depends_on, list):
-            for dep in depends_on:
-                if dep not in step_ids:
-                    errors.append(f"步骤 {step_id}: 依赖 '{dep}' 未定义或顺序错误")
-
-    return errors
-
-
 _TYPE_MAP = {
     "float": (int, float),
     "int": (int,),
@@ -203,22 +64,66 @@ _TYPE_MAP = {
 
 
 def _check_type(value, expected_type: str) -> bool:
-    """Check if value matches the expected type string."""
     types = _TYPE_MAP.get(expected_type)
     if types is None:
         return True
-    # bool is subclass of int in Python, so exclude it for numeric checks
     if expected_type in ("float", "int") and isinstance(value, bool):
         return False
     return isinstance(value, types)
 
 
+def _validate_plan(plan_json: dict) -> list[str]:
+    errors: list[str] = []
+    steps = plan_json.get("plan", [])
+    if not isinstance(steps, list):
+        return ["plan 字段必须是列表"]
+    step_ids: set[str] = set()
+    for i, step in enumerate(steps):
+        if not isinstance(step, dict):
+            errors.append(f"步骤 {i + 1}: 必须是字典")
+            continue
+        step_id = step.get("step_id", f"step_{i + 1}")
+        tool = step.get("tool", "")
+        args = step.get("args", {})
+        if step_id in step_ids:
+            errors.append(f"步骤 {step_id}: 重复的 step_id")
+        step_ids.add(step_id)
+        if not tool:
+            errors.append(f"步骤 {step_id}: 缺少 tool 字段")
+            continue
+        if tool not in TOOL_SPECS:
+            valid = ", ".join(TOOL_SPECS.keys())
+            errors.append(f"步骤 {step_id}: 未知工具 '{tool}'，可用工具: {valid}")
+            continue
+        spec = TOOL_SPECS[tool]
+        for req in spec.get("required", []):
+            if req not in args:
+                errors.append(f"步骤 {step_id}: 工具 '{tool}' 缺少必填参数 '{req}'")
+        params_spec = spec.get("parameters", {})
+        for arg_name, arg_value in args.items():
+            if arg_name in params_spec:
+                expected_type = params_spec[arg_name].get("type", "")
+                if not _check_type(arg_value, expected_type):
+                    errors.append(
+                        f"步骤 {step_id}: 参数 '{arg_name}' 期望类型 {expected_type}，"
+                        f"实际为 {type(arg_value).__name__}"
+                    )
+        depends_on = step.get("depends_on", [])
+        if isinstance(depends_on, list):
+            for dep in depends_on:
+                if dep not in step_ids:
+                    errors.append(f"步骤 {step_id}: 依赖 '{dep}' 未定义或顺序错误")
+    return errors
+
+
 def _validator_is_blocking(result: dict) -> bool:
-    return result.get("validator") in {"verify_object_exists", "verify_shape_valid"}
+    """Kept as a re-export: `app.evaluation.validators` owns the policy."""
+    from app.evaluation.validators import is_blocking_validator
+
+    return is_blocking_validator(result)
 
 
 def _consecutive_recent_errors(execution_history: dict | None) -> int:
-    """Count trailing error entries in recent history (oldest→newest list)."""
     if not execution_history:
         return 0
     count = 0
@@ -241,97 +146,124 @@ def _skip_default_object_validators(tool_call: dict, execution_result: dict) -> 
     )
 
 
-def should_end(state: AgentState) -> str:
-    """Routing function for conditional edge after validate_plan."""
+# ── 1. start ───────────────────────────────────────────────────────
+
+def start_plan(*, user_input: str, document_state=None) -> dict:
+    """Generate high-level plan and initialize the abstract step queue.
+
+    Queue is built exactly once here (previously also inside the plan node).
+    """
+    result = generate_high_level_plan(user_input, document_state)
+    if result.get("status") == "error":
+        return {"status": "error", "error_message": result.get("message", "生成高层计划失败")}
+    if result.get("status") == "need_more_info":
+        return {"status": "need_more_info", "high_level_plan": result}
+
+    high_level_plan = result
+    # evaluate 侧 brief 从这里回取；LLM 返回里通常没有该字段
+    high_level_plan["user_input"] = user_input
+    queue = build_queue_from_high_level_plan(high_level_plan).model_dump(mode="json")
+    high_level_plan["abstract_step_queue"] = queue
+    high_level_plan.setdefault("recipe_id", queue.get("recipe_id", "llm_session"))
+    current_step = resolve_current_abstract_step(queue)
+    if current_step and current_step.get("step_id"):
+        high_level_plan["current_phase_id"] = current_step["step_id"]
+    return {
+        "status": "ok",
+        "high_level_plan": high_level_plan,
+        "abstract_step_queue": queue,
+        "current_abstract_step": current_step,
+    }
+
+
+# ── 2. next ────────────────────────────────────────────────────────
+
+def next_step(
+    *,
+    user_input: str,
+    high_level_plan: dict | None,
+    current_phase_id: str | None,
+    document_state=None,
+    execution_history: dict | None = None,
+    session_memory: dict | None = None,
+    name_map: dict | None = None,
+    abstract_step_queue: dict | None = None,
+    current_abstract_step: dict | None = None,
+    session_id: str = "default",
+) -> dict:
+    """Plan the next batch of tool calls and validate them."""
+    state = {
+        "session_id": session_id,
+        "user_input": user_input,
+        "high_level_plan": high_level_plan or {},
+        "current_phase_id": current_phase_id,
+        "document_state": document_state,
+        "execution_history": execution_history or {},
+        "session_memory": session_memory,
+        "name_map": name_map or {},
+        "abstract_step_queue": abstract_step_queue,
+        "current_abstract_step": current_abstract_step,
+    }
+    planned = plan_next_step_node(state)
+    if planned.get("status") == "finished":
+        return planned
+    validated = validate_next_step_node({**state, **planned})
+    return {**planned, **validated}
+
+
+# ── 3. evaluate ────────────────────────────────────────────────────
+
+def evaluate_step(**kwargs) -> dict:
+    return evaluate_step_node(kwargs)
+
+
+# ── legacy V0.1 plan graph (was build_cad_graph) ──────────────────
+
+def should_end(state: dict) -> str:
     status = state.get("status", "")
     retry_count = state.get("retry_count", 0)
-    max_retries = 2
-
-    if status == "ok" or status == "need_more_info":
+    if status in {"ok", "need_more_info"}:
         return "end"
-    if retry_count >= max_retries:
+    if retry_count >= 2:
         return "end"
     return "retry"
 
 
-# ── V0.7: High-level plan nodes ────────────────────────────────────
-
-
-def generate_high_level_plan_node(state: AgentState) -> dict:
-    """Generate a high-level phase plan via LLM."""
-    user_input = state["user_input"]
-    document_state = state.get("document_state")
-
-    result = generate_high_level_plan(user_input, document_state)
-
-    if result.get("status") == "error":
-        return {
-            "high_level_plan": None,
-            "status": "error",
-            "error_message": result.get("message", "生成高层计划失败"),
-        }
-
-    if result.get("status") == "ok" and result.get("phases"):
-        queue = build_queue_from_high_level_plan(result)
-        result["abstract_step_queue"] = queue.model_dump(mode="json")
-        result["recipe_id"] = queue.recipe_id
-
-    return {
-        "high_level_plan": result,
-        "phases": result.get("phases", []),
-        "abstract_step_queue": result.get("abstract_step_queue"),
-        "status": "high_level_planned",
+def legacy_plan(*, user_input: str, document_state=None, conversation_id=None) -> dict:
+    """Plain replacement for the old LangGraph plan retry loop."""
+    state = {
+        "user_input": user_input,
+        "document_state": document_state,
+        "conversation_id": conversation_id,
+        "retry_count": 0,
+        "validation_errors": [],
     }
-
-
-def validate_high_level_plan_node(state: AgentState) -> dict:
-    """Validate the high-level plan structure."""
-    high_level_plan = state.get("high_level_plan")
-
-    if not high_level_plan:
-        return {
-            "status": "error",
-            "error_message": "高层计划为空",
-        }
-
-    if high_level_plan.get("status") == "need_more_info":
-        return {"status": "need_more_info"}
-
-    phases = high_level_plan.get("phases", [])
-    if not phases:
-        return {
-            "status": "error",
-            "error_message": "高层计划中没有阶段",
-        }
-
-    errors = []
-    phase_ids = set()
-    for phase in phases:
-        phase_id = phase.get("phase_id")
-        if not phase_id:
-            errors.append("阶段缺少 phase_id")
-        elif phase_id in phase_ids:
-            errors.append(f"重复的 phase_id: {phase_id}")
+    if not (user_input or "").strip():
+        return {"status": "error", "error_message": "用户输入为空", "plan_json": None}
+    while True:
+        suffix = ""
+        if state["retry_count"] > 0 and state["validation_errors"]:
+            suffix = "\n\n[系统反馈] 上一次生成的计划存在以下问题，请修正后重新生成：\n" + "".join(
+                f"- {e}\n" for e in state["validation_errors"]
+            )
+        plan_json = generate_plan(user_input + suffix, document_state)
+        state["plan_json"] = plan_json
+        if plan_json and plan_json.get("status") == "need_more_info":
+            state["status"] = "need_more_info"
         else:
-            phase_ids.add(phase_id)
-
-        if not phase.get("intent"):
-            errors.append(f"阶段 {phase_id} 缺少 intent")
-
-    if errors:
-        return {
-            "status": "validation_failed",
-            "error_message": "; ".join(errors),
-        }
-
-    return {"status": "ok"}
+            errors = _validate_plan(plan_json or {})
+            state["validation_errors"] = errors
+            state["status"] = "validation_failed" if errors else "ok"
+            if errors:
+                state["error_message"] = "; ".join(errors)
+        if should_end(state) == "end":
+            return state
+        state["retry_count"] += 1
 
 
-# ── V0.7: Next step nodes ──────────────────────────────────────────
+# ── node-shaped functions (thin wrappers for old call sites/tests) ─
 
-
-def plan_next_step_node(state: AgentState) -> dict:
-    """Generate next tool calls based on current state, plan queue, and history."""
+def plan_next_step_node(state: dict) -> dict:
     session_id = state.get("session_id", "default")
     user_input = state["user_input"]
     high_level_plan = state.get("high_level_plan", {})
@@ -352,10 +284,7 @@ def plan_next_step_node(state: AgentState) -> dict:
             current_phase_id = current_abstract_step.get("step_id")
         else:
             return {
-                "next_step_result": {
-                    "decision": "finish",
-                    "message": "没有可执行的阶段",
-                },
+                "next_step_result": {"decision": "finish", "message": "没有可执行的阶段"},
                 "status": "finished",
             }
 
@@ -371,11 +300,7 @@ def plan_next_step_node(state: AgentState) -> dict:
             "status": "next_step_planned",
         }
 
-    phase_id = (
-        current_abstract_step.get("step_id")
-        if current_abstract_step
-        else current_phase_id
-    )
+    phase_id = current_abstract_step.get("step_id") if current_abstract_step else current_phase_id
     result = generate_next_tool_calls(
         session_id=session_id,
         user_input=user_input,
@@ -390,61 +315,49 @@ def plan_next_step_node(state: AgentState) -> dict:
         result["abstract_step_id"] = current_abstract_step.get("step_id")
         result["current_abstract_step"] = current_abstract_step
         result["recipe_id"] = (abstract_step_queue or {}).get("recipe_id")
+    result["phase_id"] = phase_id
 
-    return {
-        "next_step_result": result,
-        "current_phase_id": phase_id,
-        "status": "next_step_planned",
-    }
+    return {"next_step_result": result, "current_phase_id": phase_id, "status": "next_step_planned"}
 
 
-def validate_next_step_node(state: AgentState) -> dict:
-    """Validate the next step tool calls."""
+def validate_next_step_node(state: dict) -> dict:
     next_step_result = state.get("next_step_result", {})
-
     decision = next_step_result.get("decision", "")
     if decision in ("finish", "abort", "ask_user"):
         return {"status": "ok"}
 
     tool_calls = next_step_result.get("tool_calls", [])
     if not tool_calls:
-        return {
-            "status": "ok",
-        }
+        return {"status": "ok"}
 
     errors = []
     for i, call in enumerate(tool_calls):
         if not call.get("tool"):
             errors.append(f"tool_call {i}: 缺少 tool 字段")
             continue
-
         tool_name = call["tool"]
         if tool_name not in TOOL_SPECS:
             valid = ", ".join(TOOL_SPECS.keys())
             errors.append(f"tool_call {i}: 未知工具 '{tool_name}'，可用: {valid}")
             continue
-
         spec = TOOL_SPECS[tool_name]
         args = call.get("args", {})
         for req in spec.get("required", []):
             if req not in args:
                 errors.append(f"tool_call {i}: '{tool_name}' 缺少必填参数 '{req}'")
-
     if errors:
-        return {
-            "status": "validation_failed",
-            "error_message": "; ".join(errors),
-        }
+        return {"status": "validation_failed", "error_message": "; ".join(errors)}
 
     query_errors = validate_query_before_act(
         tool_calls,
         state.get("execution_history") or {},
         session_memory=state.get("session_memory"),
+        document_state=state.get("document_state"),
     )
     if query_errors:
         query_calls = build_required_query_calls(query_errors)
         next_step_result["decision"] = "execute"
-        next_step_result["tool_calls"] = query_calls
+        next_step_result["tool_calls"] = query_calls + tool_calls
         next_step_result["message"] = "需要先查询当前几何事实，再执行空间/拓扑敏感操作。"
         return {
             "status": "ok",
@@ -452,17 +365,12 @@ def validate_next_step_node(state: AgentState) -> dict:
             "validation_errors": query_errors,
             "query_required": True,
         }
-
     return {"status": "ok"}
 
 
-# ── V0.7: Evaluate step node ───────────────────────────────────────
-
-
-def evaluate_step_node(state: AgentState) -> dict:
-    """Evaluate execution result via LLM (always), with deterministic checks as context."""
+def evaluate_step_node(state: dict) -> dict:
     from app.evaluation.rules import run_deterministic_checks
-    from app.evaluation.phases import normalize_evaluate_decision
+    from app.evaluation.validators import run_geometry_validators
 
     session_id = state.get("session_id", "default")
     last_tool_call = state.get("last_tool_call", {})
@@ -491,15 +399,17 @@ def evaluate_step_node(state: AgentState) -> dict:
         or is_query_tool(last_tool_call.get("tool", ""))
     )
     skip_default_validators = _skip_default_object_validators(last_tool_call, execution_result)
+    # 两种来源分开：模型在 expected_effect 里自己点名的验证器总是跑（它自己要求的检查，
+    # 非阻断项只会变成 warning 回灌提示词）；配方/步骤的默认后置条件才归 strict 管，
+    # 那些是系统强加的，全量打开容易触发修复循环。
     validator_names = []
-    if strict_validation and not skip_default_validators:
-        validator_names = resolve_validator_names(current_abstract_step, current_recipe)
+    if not skip_default_validators:
+        if strict_validation:
+            validator_names = resolve_validator_names(current_abstract_step, current_recipe)
         expected_validators = (last_tool_call.get("expected_effect") or {}).get("validators") or []
         for name in expected_validators:
             if name not in validator_names:
                 validator_names.append(name)
-    from app.evaluation.validators import run_geometry_validators
-
     validator_results = run_geometry_validators(
         validator_names,
         before_state=before_state,
@@ -507,11 +417,9 @@ def evaluate_step_node(state: AgentState) -> dict:
         tool_call=last_tool_call,
         execution_result=execution_result,
     )
-    failed_validator_messages = [
-        f"{item['validator']}:{item['error_code']}"
-        for item in validator_results
-        if not item.get("passed") and _validator_is_blocking(item)
-    ]
+    from app.evaluation.validators import blocking_failures
+
+    failed_validator_messages = blocking_failures(validator_results)
     if failed_validator_messages and det_result["passed"]:
         det_result = {
             "passed": False,
@@ -533,7 +441,7 @@ def evaluate_step_node(state: AgentState) -> dict:
         session_memory=state.get("session_memory"),
     )
     if result.get("repair_tool_calls"):
-        result["repair_tool_calls"] = _sanitize_tool_calls(result["repair_tool_calls"])
+        result["repair_tool_calls"] = sanitize_tool_calls(result["repair_tool_calls"])
     result.setdefault("validator_results", validator_results)
     result.setdefault("postcondition_results", validator_results)
     if not det_result["passed"]:
@@ -542,10 +450,12 @@ def evaluate_step_node(state: AgentState) -> dict:
         result.pop("updated_current_phase_id", None)
         if result.get("decision") in {"finish", "abort"}:
             result["decision"] = "continue"
+    from app.evaluation.validators import is_blocking_validator
+
     warning_validator_messages = [
         f"{item['validator']}:{item['error_code']}"
         for item in validator_results
-        if not item.get("passed") and not _validator_is_blocking(item)
+        if not item.get("passed") and not is_blocking_validator(item)
     ]
     if warning_validator_messages:
         issues = result.setdefault("deterministic_issues", [])
@@ -556,20 +466,16 @@ def evaluate_step_node(state: AgentState) -> dict:
         result["phase_status"] = "in_progress"
         result.pop("updated_current_phase_id", None)
 
-    # Success path: advance when tool execution succeeded and no blocking validators failed.
-    # Do not wait for LLM phase_status=completed — warning validators must not stall the queue.
     can_advance_success = (
         abstract_step_queue
         and current_abstract_step
         and det_result["passed"]
         and not is_query_execution
-        and not failed_validator_messages
         and should_advance_abstract_step(
             execution_passed=True,
             validator_results=validator_results,
         )
     )
-    # Failure path: consecutive errors or explicit skip → advance to avoid dead loops.
     can_advance_skip = (
         abstract_step_queue
         and current_abstract_step
@@ -580,7 +486,6 @@ def evaluate_step_node(state: AgentState) -> dict:
             or _consecutive_recent_errors(execution_history) >= 2
         )
     )
-
     if can_advance_success or can_advance_skip:
         advancement = apply_abstract_step_advancement(
             abstract_step_queue,
@@ -608,17 +513,29 @@ def evaluate_step_node(state: AgentState) -> dict:
             result["decision"] = "continue"
             result["phase_status"] = "in_progress"
 
-    result = normalize_evaluate_decision(result, high_level_plan, current_phase_id)
+    result = normalize_evaluate_decision(
+        result,
+        high_level_plan,
+        current_phase_id,
+        abstract_step_queue=result.get("abstract_step_queue") or abstract_step_queue,
+    )
 
+    active_queue = result.get("abstract_step_queue") or abstract_step_queue
+    active_step = result.get("current_abstract_step") or resolve_current_abstract_step(active_queue)
     new_phase_id = result.get("updated_current_phase_id")
     updates = {
         "evaluate_result": result,
         "status": "evaluated",
         "abstract_step_queue": result.get("abstract_step_queue", abstract_step_queue),
     }
-    if new_phase_id:
+    if active_queue and isinstance(active_step, dict) and active_step.get("step_id"):
+        updates["current_phase_id"] = (
+            new_phase_id
+            if result.get("phase_status") == "completed" and new_phase_id
+            else active_step["step_id"]
+        )
+    elif new_phase_id:
         updates["current_phase_id"] = new_phase_id
     if "current_abstract_step" in result:
         updates["current_abstract_step"] = result.get("current_abstract_step")
-
     return updates

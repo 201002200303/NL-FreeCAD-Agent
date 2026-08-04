@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from app.abstract_steps.planner import advance_step_queue
 from app.abstract_steps.schemas import AbstractStepQueue
+from app.evaluation.validators import blocking_failures
 
 DEFAULT_VALIDATORS: list[str] = []
 
@@ -33,8 +34,14 @@ def should_advance_abstract_step(
     execution_passed: bool,
     validator_results: list[dict],
 ) -> bool:
-    """Default advancement depends only on tool execution success."""
-    return bool(execution_passed)
+    """Advance only when the tool ran and no blocking validator failed.
+
+    Non-blocking validator failures are warnings: they are fed back into the
+    prompt but must not stall the queue.
+    """
+    if not execution_passed:
+        return False
+    return not blocking_failures(validator_results)
 
 
 def apply_abstract_step_advancement(

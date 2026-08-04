@@ -273,11 +273,13 @@ def sketch_add_bspline(
 def sketch_add_constraint(doc, sketch="", constraint_type="Coincident", geo1=0, point1=1, geo2=1, point2=1):
     """Add sketch constraint. geo/point are 0-based indices per Sketcher API."""
     sk = get_object(doc, sketch)
-    if geo2 is None:
-        cid = sk.addConstraint(Sketcher.Constraint(constraint_type, int(geo1), int(point1)))
+    ctype = str(constraint_type)
+    # Horizontal/Vertical only take one geometry index; 4-arg form is redundant/wrong.
+    if ctype in ("Horizontal", "Vertical") or geo2 is None:
+        cid = sk.addConstraint(Sketcher.Constraint(ctype, int(geo1)))
     else:
         cid = sk.addConstraint(Sketcher.Constraint(
-            constraint_type, int(geo1), int(point1), int(geo2), int(point2),
+            ctype, int(geo1), int(point1), int(geo2), int(point2),
         ))
     return {"tool": "sketch_add_constraint", "sketch": sketch, "constraint_id": cid}
 

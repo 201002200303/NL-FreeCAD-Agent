@@ -1,5 +1,7 @@
 """Phase progression helpers for closed-loop execution."""
 
+from app.abstract_steps.planner import resolve_current_abstract_step
+
 
 def get_phase_ids(high_level_plan: dict | None) -> list[str]:
     if not high_level_plan:
@@ -41,20 +43,72 @@ def format_phases_overview(high_level_plan: dict | None, current_phase_id: str |
     return "\n".join(lines)
 
 
+def canonical_phase_id(
+    abstract_step_queue: dict | None = None,
+    current_abstract_step: dict | None = None,
+    fallback: str | None = None,
+) -> str | None:
+    """Single source of truth: active abstract step id, else fallback."""
+    step = current_abstract_step or resolve_current_abstract_step(abstract_step_queue)
+    if isinstance(step, dict) and step.get("step_id"):
+        return step["step_id"]
+    return fallback
+
+
 def normalize_evaluate_decision(
     result: dict,
     high_level_plan: dict | None,
     current_phase_id: str | None,
+    *,
+    abstract_step_queue: dict | None = None,
 ) -> dict:
-    """Prevent premature finish when more phases / abstract steps remain."""
+    """Prevent premature finish / phase drift when abstract-step queue drives control."""
     out = dict(result)
     if out.get("abstract_step_completed"):
         out["decision"] = "finish"
         out["phase_status"] = "completed"
         return out
 
-    # Abstract-step queue still has work: never finish based on high_level phase alone.
-    # (Recipe queues like AS1→AS2 may outlive a single high_level phase P1.)
+    queue = out.get("abstract_step_queue") or abstract_step_queue
+    step = out.get("current_abstract_step")
+    resolved = step or (resolve_current_abstract_step(queue) if queue else None)
+
+    # Queue-driven track: phase pointer is derived from abstract step only.
+    if queue:
+        if resolved and out.get("decision") == "finish":
+            out["decision"] = "continue"
+            out["updated_current_phase_id"] = resolved.get("step_id")
+            if step is None:
+                out["current_abstract_step"] = resolved
+            return out
+
+        if not resolved:
+            return out
+
+        sid = resolved.get("step_id")
+        updated = out.get("updated_current_phase_id")
+        # Real advancement: harness moved current_abstract_step to the next id.
+        advanced = (
+            out.get("phase_status") == "completed"
+            and updated == sid
+            and bool(sid)
+            and sid != current_phase_id
+            and step is not None  # only trust when evaluate/harness supplied the step
+        )
+        if advanced:
+            out["decision"] = "continue"
+            out["updated_current_phase_id"] = sid
+            return out
+
+        # LLM claimed phase complete / jumped ahead without queue advancement → stay.
+        if out.get("phase_status") == "completed" and not advanced:
+            out["phase_status"] = "in_progress"
+            out.pop("updated_current_phase_id", None)
+        elif updated and sid and updated != sid:
+            out.pop("updated_current_phase_id", None)
+        return out
+
+    # Legacy high-level-only path (no abstract-step queue).
     next_abstract = out.get("current_abstract_step")
     if next_abstract and out.get("decision") == "finish":
         out["decision"] = "continue"
@@ -69,7 +123,6 @@ def normalize_evaluate_decision(
     phase_status = out.get("phase_status", "in_progress")
     next_phase = get_next_phase_id(high_level_plan, current_phase_id)
 
-    # LLM declared finish but more phases remain → advance phase, keep going
     if decision == "finish" and next_phase:
         out["decision"] = "continue"
         out["phase_status"] = "completed"
@@ -78,14 +131,12 @@ def normalize_evaluate_decision(
         out["message"] = f"阶段 {current_phase_id} 完成，进入 {next_phase}。{msg}".strip()
         return out
 
-    # Phase marked completed → advance to next phase if any
     if phase_status == "completed" and next_phase:
         out["decision"] = "continue"
         out["updated_current_phase_id"] = next_phase
         if not out.get("message"):
             out["message"] = f"阶段 {current_phase_id} 完成，进入 {next_phase}"
 
-    # Last high-level phase done → allow finish only when no abstract step remains
     if is_last_phase(high_level_plan, current_phase_id) and not next_abstract:
         if phase_status == "completed" or decision == "finish":
             out["decision"] = "finish"
@@ -99,7 +150,11 @@ def normalize_next_step_decision(
     high_level_plan: dict | None,
     current_phase_id: str | None,
 ) -> tuple[dict, str | None]:
-    """Prevent next_step from finishing early. Returns (result, advanced_phase_id)."""
+    """Keep next_step on the current phase; evaluate/harness owns phase advances.
+
+    Returns (result, advanced_phase_id). advanced_phase_id is always None now —
+    kept for call-site compatibility.
+    """
     if not high_level_plan or not current_phase_id:
         return result, None
 
@@ -107,11 +162,15 @@ def normalize_next_step_decision(
     decision = out.get("decision", "execute")
     next_phase = get_next_phase_id(high_level_plan, current_phase_id)
 
+    # Do not let next_step jump phases; that desyncs abstract_step_queue.
     if decision == "finish" and next_phase:
         out["decision"] = "execute"
-        out["phase_id"] = next_phase
-        out["tool_calls"] = []
-        out["message"] = f"阶段 {current_phase_id} 已完成，自动进入 {next_phase}"
-        return out, next_phase
+        out["phase_id"] = current_phase_id
+        msg = out.get("message") or ""
+        out["message"] = (
+            f"{msg}（阶段切换由 evaluate 确认，请继续当前阶段 {current_phase_id}）"
+        ).strip()
+        return out, None
 
+    out["phase_id"] = current_phase_id
     return out, None

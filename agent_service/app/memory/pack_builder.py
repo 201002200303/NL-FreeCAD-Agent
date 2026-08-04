@@ -36,11 +36,17 @@ def build_memory_pack_from_history(
             if status == "success":
                 query_result = entry.get("query_result") or {}
                 cache_target = target or query_result.get("name") or "__document__"
+                from app.memory.geometry_facts import extract_spatial_facts, has_spatial_facts
+
+                facts = extract_spatial_facts(query_result)
                 query_cache[cache_target] = {
                     "tool": tool,
                     "call_id": entry.get("call_id"),
                     "summary": _summarize_query_result(query_result),
                     "query_result": query_result,
+                    "has_spatial_facts": has_spatial_facts(query_result=query_result),
+                    "size": facts.get("size"),
+                    "center": facts.get("center"),
                 }
         elif status == "success":
             for name in entry.get("produced_objects") or []:
@@ -91,14 +97,31 @@ def build_memory_pack_from_history(
     if pending:
         long_parts.append("失败/待处理:\n" + "\n".join(f"- {line}" for line in pending[-5:]))
 
+    # Fallback phase window: filter by phase_id when history is tagged.
+    phase_id = (current_abstract_step or {}).get("step_id") or current_phase_id
+    tagged = [e for e in recent_events if e.get("phase_id")]
+    if tagged and phase_id:
+        phase_events = [e for e in recent_events if e.get("phase_id") == phase_id]
+    else:
+        phase_events = list(recent_events)
+
     return {
         "working_summary": "\n".join(working_lines),
         "recent_events": recent_events[-RECENT_EVENTS_MAX:],
+        "phase_events": phase_events[-40:],
+        "phase_conclusions": [],
         "object_memory": object_memory,
         "error_memory": error_memory,
-        "query_cache": {k: {kk: vv for kk, vv in v.items() if kk != "query_result"} for k, v in query_cache.items()},
+        "query_cache": {
+            k: {
+                kk: vv
+                for kk, vv in v.items()
+                if kk != "query_result"
+            }
+            for k, v in query_cache.items()
+        },
         "progress": {
-            "current_phase_id": current_phase_id,
+            "current_phase_id": phase_id,
             "current_step_id": (current_abstract_step or {}).get("step_id"),
         },
         "long_summary": "\n\n".join(long_parts),
@@ -125,16 +148,6 @@ def _extract_target_from_entry(entry: dict) -> str | None:
 
 
 def _summarize_query_result(query_result: dict | None) -> str:
-    if not query_result:
-        return ""
-    parts = []
-    if query_result.get("name"):
-        parts.append(f"name={query_result['name']}")
-    bbox = query_result.get("bbox") or {}
-    if bbox.get("size"):
-        parts.append(f"size={bbox['size']}")
-    if bbox.get("center"):
-        parts.append(f"center={bbox['center']}")
-    if query_result.get("message"):
-        parts.append(str(query_result["message"]))
-    return "; ".join(parts) or "query ok"
+    from app.memory.geometry_facts import summarize_query_result
+
+    return summarize_query_result(query_result)

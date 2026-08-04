@@ -6,16 +6,26 @@ Keep in sync with freecad_addon/AICADAgent/cad_tools/TOOL_REGISTRY.
 TOOL_SPECS: dict = {
     # ── primitives ──
     "create_box": {
-        "description": "创建一个长方体 (Part::Box)，支持指定位置",
+        "description": (
+            "创建长方体 (Part::Box)。"
+            "默认 anchor=min：pos 是角点 (xmin,ymin,zmin)，盒子沿 +X/+Y/+Z 延伸。"
+            "键槽/对称刀具请用 anchor=center：pos 为盒子中心。"
+            "切勿把 min 模式的 pos_y=0 当成「关于 Y=0 对称」。"
+        ),
         "parameters": {
             "name": {"type": "string", "description": "对象名称"},
-            "length": {"type": "float", "description": "长度 (mm)"},
-            "width": {"type": "float", "description": "宽度 (mm)"},
-            "height": {"type": "float", "description": "高度 (mm)"},
+            "length": {"type": "float", "description": "沿 X 长度 (mm)"},
+            "width": {"type": "float", "description": "沿 Y 宽度 (mm)"},
+            "height": {"type": "float", "description": "沿 Z 高度 (mm)"},
             "unit": {"type": "string", "default": "mm", "description": "单位，仅支持 mm"},
-            "pos_x": {"type": "float", "default": 0, "description": "X 轴位置 (mm)"},
-            "pos_y": {"type": "float", "default": 0, "description": "Y 轴位置 (mm)"},
-            "pos_z": {"type": "float", "default": 0, "description": "Z 轴位置 (mm)"},
+            "pos_x": {"type": "float", "default": 0, "description": "X (mm)；含义见 anchor"},
+            "pos_y": {"type": "float", "default": 0, "description": "Y (mm)；含义见 anchor"},
+            "pos_z": {"type": "float", "default": 0, "description": "Z (mm)；含义见 anchor"},
+            "anchor": {
+                "type": "string",
+                "default": "min",
+                "description": "min=角点放置（默认）；center=中心放置（键槽推荐）",
+            },
         },
         "required": ["name", "length", "width", "height"],
     },
@@ -198,12 +208,121 @@ TOOL_SPECS: dict = {
         "required": ["target"],
     },
     "copy_object": {
-        "description": "复制对象",
+        "description": "复制对象（仅 target+name；结果对象名=name，可供后续 rotate/fuse 引用）",
         "parameters": {
             "target": {"type": "string", "description": "源对象名称"},
             "name": {"type": "string", "description": "副本名称"},
         },
         "required": ["target", "name"],
+    },
+    "polar_pattern": {
+        "description": (
+            "圆周阵列：绕原点/指定中心旋转复制。"
+            "count=总实例数（含原件）；间隔角=angle/count。"
+            "副本命名 name_prefix2..name_prefix{count}（prefix 空则用 target_2..）。"
+            "齿轮/法兰孔优先用本工具，禁止手写十几次 copy+rotate。"
+        ),
+        "parameters": {
+            "target": {"type": "string", "description": "源对象（第1个实例，位于0°）"},
+            "count": {"type": "int", "description": "总数量，含原件，>=2"},
+            "angle": {"type": "float", "default": 360, "description": "阵列总角度（度），满圈360"},
+            "axis": {"type": "string", "default": "Z", "description": "旋转轴 X/Y/Z"},
+            "origin_x": {"type": "float", "default": 0, "description": "旋转中心 X"},
+            "origin_y": {"type": "float", "default": 0, "description": "旋转中心 Y"},
+            "origin_z": {"type": "float", "default": 0, "description": "旋转中心 Z"},
+            "name_prefix": {
+                "type": "string",
+                "default": "",
+                "description": "副本名前缀，如 Tooth → Tooth2..ToothN",
+            },
+            "fuse": {
+                "type": "bool",
+                "default": False,
+                "description": "是否将原件+副本布尔并成一体",
+            },
+            "fuse_name": {
+                "type": "string",
+                "description": "fuse=true 时的结果对象名",
+            },
+        },
+        "required": ["target", "count"],
+    },
+    "linear_pattern": {
+        "description": (
+            "线性阵列：沿 (dx,dy,dz) 间距复制。"
+            "count=总实例数（含原件）。多孔/肋板/键槽重复优先用本工具。"
+        ),
+        "parameters": {
+            "target": {"type": "string", "description": "源对象（第1个实例）"},
+            "count": {"type": "int", "description": "总数量，含原件，>=2"},
+            "dx": {"type": "float", "default": 10, "description": "相邻实例 X 间距 (mm)"},
+            "dy": {"type": "float", "default": 0, "description": "相邻实例 Y 间距 (mm)"},
+            "dz": {"type": "float", "default": 0, "description": "相邻实例 Z 间距 (mm)"},
+            "name_prefix": {
+                "type": "string",
+                "default": "",
+                "description": "副本名前缀，如 Hole → Hole2..HoleN",
+            },
+            "fuse": {
+                "type": "bool",
+                "default": False,
+                "description": "是否将原件+副本布尔并成一体",
+            },
+            "fuse_name": {
+                "type": "string",
+                "description": "fuse=true 时的结果对象名",
+            },
+        },
+        "required": ["target", "count"],
+    },
+    "align_objects": {
+        "description": (
+            "相对对齐：按世界 bbox 把 target 对齐到 reference（优先于 set_placement/move，避免猜绝对坐标）。"
+            "mode=stack 表示 target.min 贴 reference.max（堆叠/并排）"
+        ),
+        "parameters": {
+            "target": {"type": "string", "description": "要移动的对象"},
+            "reference": {"type": "string", "description": "对齐参考对象"},
+            "axis": {"type": "string", "default": "z", "description": "对齐轴: x/y/z"},
+            "mode": {
+                "type": "string",
+                "default": "stack",
+                "description": "min/max/center/stack",
+            },
+            "offset": {"type": "float", "default": 0, "description": "额外间隙 (mm)"},
+        },
+        "required": ["target", "reference"],
+    },
+    "place_relative": {
+        "description": (
+            "相对放置：把 target 的 bbox 中心放到 reference 的锚点 + (dx,dy,dz)。"
+            "优先于手算绝对坐标再 set_placement"
+        ),
+        "parameters": {
+            "target": {"type": "string", "description": "要移动的对象"},
+            "reference": {"type": "string", "description": "参考对象"},
+            "anchor": {
+                "type": "string",
+                "default": "center",
+                "description": "center/top/bottom/left/right/front/back",
+            },
+            "dx": {"type": "float", "default": 0},
+            "dy": {"type": "float", "default": 0},
+            "dz": {"type": "float", "default": 0},
+        },
+        "required": ["target", "reference"],
+    },
+    "distribute_along": {
+        "description": "沿轴等间距排列多个对象（首个不动）",
+        "parameters": {
+            "targets": {
+                "type": "string",
+                "description": "逗号分隔的对象名，如 Wheel1,Wheel2,Wheel3,Wheel4",
+            },
+            "axis": {"type": "string", "default": "x", "description": "x/y/z"},
+            "spacing": {"type": "float", "description": "相邻对象间隙 (mm)"},
+        },
+        "required": ["targets", "spacing"],
     },
     "modify_param": {
         "description": "修改对象参数",
@@ -432,20 +551,20 @@ TOOL_SPECS: dict = {
         "required": ["name", "sketch", "length"],
     },
     "pad_to_face": {
-        "description": "拉伸草图到指定面 (UpToFace)",
+        "description": "拉伸草图到指定面 (UpToFace)；target 须与 Pad 同属一个 Body，否则回退 Length",
         "parameters": {
             "name": {"type": "string", "description": "Pad 名称"},
             "sketch": {"type": "string", "description": "草图对象名"},
-            "target": {"type": "string", "description": "目标实体（提供终止面）"},
+            "target": {"type": "string", "description": "终止面所在实体（须同 Body）"},
             "face": {"type": "string", "default": "Face1", "description": "终止面编号"},
-            "length": {"type": "float", "default": 0, "description": "备用长度"},
+            "length": {"type": "float", "default": 10, "description": "target 不在同 Body 时的回退长度"},
             "body": {"type": "string", "description": "Body 名称（可选）"},
             "offset": {"type": "float", "default": 0, "description": "距终止面偏移"},
         },
         "required": ["name", "sketch", "target", "face"],
     },
     "revolve_sketch": {
-        "description": "旋转草图 (PartDesign::Revolution)，绕 axis_x/y/z 指定的轴旋转",
+        "description": "旋转草图 (PartDesign::Revolution)，绕草图 H_Axis/V_Axis（由 axis_x/y/z 近似选择）",
         "parameters": {
             "name": {"type": "string", "description": "特征名称"},
             "sketch": {"type": "string", "description": "草图对象名"},

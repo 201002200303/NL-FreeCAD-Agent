@@ -9,6 +9,32 @@ def list_topology(doc, target=""):
     obj = get_object(doc, target)
     shape = get_shape(obj)
     info = analyze_topology(shape)
+    bbox = info.get("bbox") or {}
+    # Normalize topology bbox so session_memory / agent can read size+center
+    if isinstance(bbox, dict) and all(k in bbox for k in ("x", "y", "z")):
+        try:
+            xmin, xmax = float(bbox["x"][0]), float(bbox["x"][1])
+            ymin, ymax = float(bbox["y"][0]), float(bbox["y"][1])
+            zmin, zmax = float(bbox["z"][0]), float(bbox["z"][1])
+            info["bbox"] = {
+                "x": bbox["x"],
+                "y": bbox["y"],
+                "z": bbox["z"],
+                "xmin": xmin,
+                "xmax": xmax,
+                "ymin": ymin,
+                "ymax": ymax,
+                "zmin": zmin,
+                "zmax": zmax,
+                "size": [xmax - xmin, ymax - ymin, zmax - zmin],
+                "center": [
+                    (xmin + xmax) / 2,
+                    (ymin + ymax) / 2,
+                    (zmin + zmax) / 2,
+                ],
+            }
+        except (TypeError, ValueError, IndexError, KeyError):
+            pass
     return _query_result(
         "list_topology",
         query_target=obj.Name,
@@ -52,19 +78,57 @@ def summarize_document(doc):
 def get_object_detail(doc, target=""):
     """Return detailed geometry facts for one object."""
     obj = get_object(doc, target)
+    state = _extract_object_state(obj)
+    # If document_state missed bbox but Shape is valid, fill from topology path
+    if not state.get("bbox"):
+        try:
+            shape = get_shape(obj)
+            info = analyze_topology(shape)
+            bb = info.get("bbox") or {}
+            if all(k in bb for k in ("x", "y", "z")):
+                xmin, xmax = float(bb["x"][0]), float(bb["x"][1])
+                ymin, ymax = float(bb["y"][0]), float(bb["y"][1])
+                zmin, zmax = float(bb["z"][0]), float(bb["z"][1])
+                state["bbox"] = {
+                    "xmin": xmin,
+                    "xmax": xmax,
+                    "ymin": ymin,
+                    "ymax": ymax,
+                    "zmin": zmin,
+                    "zmax": zmax,
+                    "size": [xmax - xmin, ymax - ymin, zmax - zmin],
+                    "center": [
+                        (xmin + xmax) / 2,
+                        (ymin + ymax) / 2,
+                        (zmin + zmax) / 2,
+                    ],
+                }
+        except Exception:
+            pass
     return _query_result(
         "get_object_detail",
         query_target=obj.Name,
-        query_result=_extract_object_state(obj),
+        query_result=state,
     )
+
+
+def _object_bbox(obj):
+    """BoundBox via Shape (FC 1.1+ PrimitivePy has no getBoundBox)."""
+    try:
+        return get_shape(obj).BoundBox
+    except Exception:
+        pass
+    if hasattr(obj, "getBoundBox"):
+        return obj.getBoundBox()
+    raise ValueError(f"Object '{getattr(obj, 'Name', obj)}' has no usable BoundBox")
 
 
 def measure_gap(doc, obj_a="", obj_b="", axis="X", tolerance=0.5):
     """Measure bbox gap/overlap between two objects along one world axis."""
     a = get_object(doc, obj_a)
     b = get_object(doc, obj_b)
-    bb_a = a.getBoundBox()
-    bb_b = b.getBoundBox()
+    bb_a = _object_bbox(a)
+    bb_b = _object_bbox(b)
     measurement = _measure_bbox_gap(bb_a, bb_b, axis, tolerance)
     measurement.update({
         "obj_a": a.Name,
@@ -86,7 +150,7 @@ def compare_orientation(doc, target="", expected_axis="Z", tolerance_ratio=0.2):
     when the dominant vs thin dimension differ by less than that ratio.
     """
     obj = get_object(doc, target)
-    bb = obj.getBoundBox()
+    bb = _object_bbox(obj)
     sizes = {
         "X": float(bb.XLength),
         "Y": float(bb.YLength),

@@ -32,6 +32,26 @@ def resolve_memory_pack(
     )
 
 
+def _format_event_lines(events: list[dict]) -> list[str]:
+    lines = []
+    for entry in events:
+        tool = entry.get("tool", "")
+        status = entry.get("status", "")
+        target = entry.get("target")
+        msg = entry.get("message")
+        line = f"- {entry.get('call_id', '')} {tool}"
+        if target:
+            line += f" target={target}"
+        line += f": {status}"
+        if msg:
+            line += f" — {msg}"
+        produced = entry.get("produced_objects") or []
+        if produced:
+            line += f" → {', '.join(produced)}"
+        lines.append(line)
+    return lines
+
+
 def format_memory_for_prompt(memory_pack: dict, name_map: dict | None = None) -> str:
     sections: list[str] = []
 
@@ -39,9 +59,21 @@ def format_memory_for_prompt(memory_pack: dict, name_map: dict | None = None) ->
     if working:
         sections.append(f"## 工作记忆\n{working}")
 
-    long_summary = memory_pack.get("long_summary")
-    if long_summary:
-        sections.append(f"## 长期摘要\n{long_summary}")
+    conclusions = memory_pack.get("phase_conclusions") or []
+    if conclusions:
+        lines = []
+        for item in conclusions:
+            if isinstance(item, dict):
+                produced = item.get("produced") or []
+                extra = f" → {', '.join(produced)}" if produced else ""
+                lines.append(f"- {item.get('summary') or item.get('phase_id', '?')}{extra}")
+            else:
+                lines.append(f"- {item}")
+        sections.append("## 已完成阶段结论\n" + "\n".join(lines))
+    else:
+        long_summary = memory_pack.get("long_summary")
+        if long_summary:
+            sections.append(f"## 长期摘要\n{long_summary}")
 
     progress = memory_pack.get("progress") or {}
     if progress:
@@ -50,25 +82,13 @@ def format_memory_for_prompt(memory_pack: dict, name_map: dict | None = None) ->
             f"```json\n{json.dumps(progress, ensure_ascii=False, indent=2)}\n```"
         )
 
-    recent_events = memory_pack.get("recent_events") or []
-    if recent_events:
-        lines = []
-        for entry in recent_events:
-            tool = entry.get("tool", "")
-            status = entry.get("status", "")
-            target = entry.get("target")
-            msg = entry.get("message")
-            line = f"- {entry.get('call_id', '')} {tool}"
-            if target:
-                line += f" target={target}"
-            line += f": {status}"
-            if msg:
-                line += f" — {msg}"
-            produced = entry.get("produced_objects") or []
-            if produced:
-                line += f" → {', '.join(produced)}"
-            lines.append(line)
-        sections.append("## 最近关键事件\n" + "\n".join(lines))
+    phase_events = memory_pack.get("phase_events") or []
+    if phase_events:
+        sections.append("## 当前阶段轨迹\n" + "\n".join(_format_event_lines(phase_events)))
+    else:
+        recent_events = memory_pack.get("recent_events") or []
+        if recent_events:
+            sections.append("## 最近关键事件\n" + "\n".join(_format_event_lines(recent_events)))
 
     object_memory = memory_pack.get("object_memory") or {}
     if object_memory:
@@ -80,7 +100,10 @@ def format_memory_for_prompt(memory_pack: dict, name_map: dict | None = None) ->
     query_cache = memory_pack.get("query_cache") or {}
     if query_cache:
         sections.append(
-            "## 查询缓存（勿重复 query）\n"
+            "## 查询缓存\n"
+            "规则：仅当某 target 的缓存含 `size`+`center`（或 `has_spatial_facts=true`）时，"
+            "才算已覆盖，不要重复 query；若摘要含 `spatial_facts=incomplete` 或缺少 size/center，"
+            "允许再查一次能拿到 bbox 的工具，然后必须 act。\n"
             f"```json\n{json.dumps(query_cache, ensure_ascii=False, indent=2)}\n```"
         )
 

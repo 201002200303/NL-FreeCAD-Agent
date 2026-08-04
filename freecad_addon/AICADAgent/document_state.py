@@ -58,14 +58,18 @@ def _extract_object_state(obj) -> dict:
         obj_info["visible"] = True
 
     # Shape-based info (bbox, topology, placement)
-    if _has_shape(obj):
-        obj_info["bbox"] = _extract_bbox(obj)
-        obj_info["topology"] = _extract_topology(obj)
+    shape_obj = _resolve_shape_source(obj)
+    if shape_obj is not None:
+        obj_info["bbox"] = _extract_bbox(shape_obj)
+        obj_info["topology"] = _extract_topology(shape_obj)
         obj_info["placement"] = _extract_placement(obj)
+        if obj_info["bbox"] is None and shape_obj is not obj:
+            # Tip/fallback source may still fail; try original once more
+            obj_info["bbox"] = _extract_bbox(obj)
     else:
         obj_info["bbox"] = None
         obj_info["topology"] = None
-        obj_info["placement"] = None
+        obj_info["placement"] = _extract_placement(obj)
 
     # Dependencies (full chain)
     obj_info["dependencies"] = _extract_dependencies(obj)
@@ -73,36 +77,106 @@ def _extract_object_state(obj) -> dict:
     return obj_info
 
 
-def _has_shape(obj) -> bool:
-    """Check if object has a Shape attribute."""
+def _has_valid_shape(obj) -> bool:
+    """True when object exposes a non-null FreeCAD Shape."""
     try:
-        return hasattr(obj, "Shape") and obj.Shape is not None
+        if not hasattr(obj, "Shape") or obj.Shape is None:
+            return False
+        shape = obj.Shape
+        if hasattr(shape, "isNull") and shape.isNull():
+            return False
+        return True
     except Exception:
         return False
 
 
-def _extract_bbox(obj) -> dict | None:
-    """Extract world-space bounding box (includes placement/rotation)."""
+def _resolve_shape_source(obj):
+    """Prefer the object itself; for empty Body fall back to Tip feature."""
+    if _has_valid_shape(obj):
+        return obj
     try:
-        bbox = obj.getBoundBox()
+        tip = getattr(obj, "Tip", None)
+        if tip is not None and _has_valid_shape(tip):
+            return tip
+    except Exception:
+        pass
+    return None
+
+
+def _bbox_to_dict(bbox) -> dict | None:
+    try:
         return {
-            "xmin": bbox.XMin,
-            "xmax": bbox.XMax,
-            "ymin": bbox.YMin,
-            "ymax": bbox.YMax,
-            "zmin": bbox.ZMin,
-            "zmax": bbox.ZMax,
-            "center": [bbox.Center.x, bbox.Center.y, bbox.Center.z],
-            "size": [bbox.XLength, bbox.YLength, bbox.ZLength],
+            "xmin": float(bbox.XMin),
+            "xmax": float(bbox.XMax),
+            "ymin": float(bbox.YMin),
+            "ymax": float(bbox.YMax),
+            "zmin": float(bbox.ZMin),
+            "zmax": float(bbox.ZMax),
+            "center": [
+                float(bbox.Center.x),
+                float(bbox.Center.y),
+                float(bbox.Center.z),
+            ],
+            "size": [
+                float(bbox.XLength),
+                float(bbox.YLength),
+                float(bbox.ZLength),
+            ],
         }
     except Exception:
         return None
+
+
+def _extract_bbox(obj) -> dict | None:
+    """Extract world-space bounding box (includes placement/rotation).
+
+    Part::Feature / loft / PartDesign objects may fail on obj.getBoundBox()
+    even when Shape.BoundBox is valid (list_topology already proves this path).
+    Try Shape.BoundBox first, then transformed copy, then obj.getBoundBox().
+    """
+    # 1) Direct Shape.BoundBox — same source list_topology uses successfully
+    try:
+        shape = obj.Shape
+        if shape is not None and not (hasattr(shape, "isNull") and shape.isNull()):
+            result = _bbox_to_dict(shape.BoundBox)
+            if result is not None:
+                return result
+    except Exception:
+        pass
+
+    # 2) Transformed Shape (world coords when Placement is non-identity)
+    try:
+        shape = obj.Shape
+        if shape is not None and not (hasattr(shape, "isNull") and shape.isNull()):
+            placement = (
+                obj.getGlobalPlacement()
+                if hasattr(obj, "getGlobalPlacement")
+                else obj.Placement
+            )
+            shape_w = shape.copy()
+            shape_w.transformShape(placement.toMatrix())
+            result = _bbox_to_dict(shape_w.BoundBox)
+            if result is not None:
+                return result
+    except Exception:
+        pass
+
+    # 3) Object-level BoundBox API
+    try:
+        result = _bbox_to_dict(obj.getBoundBox())
+        if result is not None:
+            return result
+    except Exception:
+        pass
+    return None
 
 
 def _extract_topology(obj) -> dict | None:
     """Extract topology summary from object's Shape."""
     try:
         shape = obj.Shape
+        if shape is None or (hasattr(shape, "isNull") and shape.isNull()):
+            return None
         return {
             "faces": len(shape.Faces),
             "edges": len(shape.Edges),

@@ -9,7 +9,7 @@ from app.tools.tool_registry import (
     infer_categories_for_task,
     validate_registry_alignment,
 )
-from app.graph.nodes import _validate_plan
+from app.workflow.service import _validate_plan
 from app.llm.llm_provider import build_system_prompt
 
 
@@ -20,13 +20,19 @@ def test_registry_alignment():
 
 
 def test_tool_count():
-    assert len(TOOL_SPECS) == 49, f"Expected 49 tools, got {len(TOOL_SPECS)}"
+    assert len(TOOL_SPECS) == 54, f"Expected 54 tools, got {len(TOOL_SPECS)}"
     all_categorized = sum(len(c["tools"]) for c in TOOL_CATEGORIES.values())
-    assert all_categorized == 49
-    print("  PASS: 49 tools in specs and categories")
+    assert all_categorized == 54
+    print("  PASS: 54 tools in specs and categories")
     for name in ("sketch_add_arc", "sketch_add_polyline", "sketch_add_bspline"):
         assert name in TOOL_SPECS
         assert get_category_for_tool(name) == "sketch"
+    for name in (
+        "align_objects", "place_relative", "distribute_along",
+        "polar_pattern", "linear_pattern", "copy_object",
+    ):
+        assert name in TOOL_SPECS
+        assert get_category_for_tool(name) == "transform"
 
 
 def test_category_retrieval():

@@ -6,7 +6,7 @@ LLM-nondeterminism (pass when LLM returns what tests expect).
 import sys
 
 sys.path.insert(0, ".")
-import app.graph.nodes as nodes
+import app.workflow.service as nodes
 from app.abstract_steps.planner import build_queue_from_phases, build_queue_from_high_level_plan
 from app.cad_spec.generator import generate_cad_spec
 from app.inspection.impact_map import build_impact_map

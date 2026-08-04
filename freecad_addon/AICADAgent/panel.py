@@ -1,553 +1,276 @@
-# panel.py - AI CAD Agent control panel (V0.8 query-driven loop)
+# panel.py — Cursor-style CAD chat dock (transcript + composer)
 
 from PySide import QtCore, QtGui
 
 import FreeCADGui
 
 from AICADAgent.agent_runner import AgentRunner
+from AICADAgent.chat_ui import ComposerBar, TranscriptView
 from AICADAgent.debug_settings import (
     is_debug_mode,
     set_debug_mode,
     get_debug_sessions_dir,
-    resolve_debug_open_path,
 )
 
 
 class AICADPanel(QtGui.QDockWidget):
-    """Dockable panel for query-driven closed-loop CAD modeling."""
+    """One chat surface: transcript + composer. Log is a debug drawer."""
 
     def __init__(self, parent=None):
-        super().__init__("AI CAD Agent", parent)
-
+        super(AICADPanel, self).__init__("AI CAD Agent", parent)
         self.setObjectName("AICADPanel")
-        self.setMinimumWidth(430)
-        self._phase_items = {}
-        self._phase_order = []
+        self.setMinimumWidth(400)
 
         self._runner = AgentRunner(self)
-        self._runner.log_message.connect(self._log)
-        self._runner.plan_generated.connect(self._on_plan_generated)
-        self._runner.step_completed.connect(self._on_step_completed)
-        self._runner.phase_changed.connect(self._on_phase_changed)
-        if hasattr(self._runner, "evaluation_completed"):
-            self._runner.evaluation_completed.connect(self._on_evaluation_completed)
-        self._runner.execution_finished.connect(self._on_execution_finished)
-        self._runner.error_occurred.connect(self._on_error)
+        self._wire_runner()
 
-        main_widget = QtGui.QWidget()
-        main_widget.setObjectName("AICADPanelBody")
-        layout = QtGui.QVBoxLayout(main_widget)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
+        body = QtGui.QWidget()
+        body.setObjectName("AICADPanelBody")
+        root = QtGui.QVBoxLayout(body)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(8)
 
-        self._build_header(layout)
-        self._build_request_box(layout)
-        self._build_status_box(layout)
-        self._build_controls(layout)
-        self._build_tabs(layout)
+        self._build_header(root)
+        self.transcript = TranscriptView()
+        root.addWidget(self.transcript, 1)
 
-        self.setWidget(main_widget)
+        self.composer = ComposerBar()
+        self.composer.send_requested.connect(self._on_send)
+        self.composer.stop_requested.connect(self._runner.stop)
+        root.addWidget(self.composer)
+
+        self._build_log_drawer(root)
+
+        self.setWidget(body)
         self._apply_style()
         self._set_status("空闲")
+        QtCore.QTimer.singleShot(0, self._runner.fetch_capabilities)
+
+    def _wire_runner(self):
+        self._runner.chat_event.connect(self._on_chat_event)
+        self._runner.busy_changed.connect(self._on_busy)
+        self._runner.error_occurred.connect(self._on_error)
+        self._runner.execution_finished.connect(self._on_finished)
+        self._runner.log_message.connect(self._log)
+        if hasattr(self._runner, "session_restored"):
+            self._runner.session_restored.connect(self._on_session_restored)
+        if hasattr(self._runner, "paused_state_changed"):
+            self._runner.paused_state_changed.connect(self._on_paused)
+        # legacy signals unused by this UI
+        self._runner.plan_generated.connect(lambda *_: None)
+        self._runner.step_completed.connect(lambda *_: None)
+        self._runner.chat_reply.connect(self._on_chat_reply_meta)
+
+    # ── layout ────────────────────────────────────────────────────
 
     def _build_header(self, layout):
         title = QtGui.QLabel("AI CAD Agent")
         title.setObjectName("PanelTitle")
-        subtitle = QtGui.QLabel("Plan -> Query -> Act -> Verify")
-        subtitle.setObjectName("PanelSubtitle")
         layout.addWidget(title)
-        layout.addWidget(subtitle)
 
-    def _build_request_box(self, layout):
-        box = QtGui.QGroupBox("建模需求")
-        box_layout = QtGui.QVBoxLayout(box)
-        self.input_edit = QtGui.QTextEdit()
-        self.input_edit.setPlaceholderText(
-            "用自然语言描述要创建或修改的 CAD 模型。\n"
-            "例如：创建一个带支架和轮轴的简化小车，并保证车轮贴合轴端。"
-        )
-        self.input_edit.setMaximumHeight(115)
-        box_layout.addWidget(self.input_edit)
+        self.status_value = QtGui.QLabel("空闲")
+        self.status_value.setObjectName("StatusLine")
+        self.status_value.setWordWrap(True)
+        layout.addWidget(self.status_value)
 
-        self.start_plan_btn = QtGui.QPushButton("生成计划")
-        self.start_plan_btn.clicked.connect(self._on_start_plan)
-        box_layout.addWidget(self.start_plan_btn)
-        layout.addWidget(box)
+        meta = QtGui.QHBoxLayout()
+        self.session_value = QtGui.QLabel("Session: -")
+        self.session_value.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.ctx_value = QtGui.QLabel("")
+        meta.addWidget(self.session_value)
+        meta.addStretch(1)
+        meta.addWidget(self.ctx_value)
+        layout.addLayout(meta)
 
-    def _build_status_box(self, layout):
-        box = QtGui.QGroupBox("会话状态")
-        grid = QtGui.QGridLayout(box)
-        grid.setColumnStretch(1, 1)
+        opts = QtGui.QHBoxLayout()
+        self.plan_mode_cb = QtGui.QCheckBox("Plan")
+        self.plan_mode_cb.setChecked(True)
+        self.plan_mode_cb.setToolTip("维护 soft todo；也可在对话里说「直接做」")
+        self.plan_mode_cb.toggled.connect(self._runner.set_plan_mode)
+        opts.addWidget(self.plan_mode_cb)
 
-        self.status_value = self._status_label("-")
-        self.session_value = self._status_label("-")
-        self.phase_value = self._status_label("-")
-        self.step_value = self._status_label("-")
+        self.vision_cb = QtGui.QCheckBox("视觉")
+        self.vision_cb.setChecked(False)
+        self.vision_cb.setToolTip("需服务端 VISION_ENABLED + VISION_MODEL")
+        self.vision_cb.toggled.connect(self._runner.set_vision_enabled)
+        opts.addWidget(self.vision_cb)
 
-        rows = [
-            ("状态", self.status_value),
-            ("Session", self.session_value),
-            ("当前阶段", self.phase_value),
-            ("当前步骤", self.step_value),
-        ]
-        for row, (label, value) in enumerate(rows):
-            grid.addWidget(QtGui.QLabel(label), row, 0)
-            grid.addWidget(value, row, 1)
-
-        layout.addWidget(box)
-
-    def _build_controls(self, layout):
-        box = QtGui.QGroupBox("执行控制")
-        box_layout = QtGui.QVBoxLayout(box)
-
-        row = QtGui.QHBoxLayout()
-        self.step_btn = QtGui.QPushButton("单步")
-        self.step_btn.clicked.connect(self._on_step)
-        self.step_btn.setEnabled(False)
-        row.addWidget(self.step_btn)
-
-        self.auto_btn = QtGui.QPushButton("自动")
-        self.auto_btn.clicked.connect(self._on_auto)
-        self.auto_btn.setEnabled(False)
-        row.addWidget(self.auto_btn)
-
-        self.pause_btn = QtGui.QPushButton("暂停")
-        self.pause_btn.clicked.connect(self._runner.pause)
-        self.pause_btn.setEnabled(False)
-        row.addWidget(self.pause_btn)
-
-        self.stop_btn = QtGui.QPushButton("停止")
-        self.stop_btn.clicked.connect(self._runner.stop)
-        self.stop_btn.setEnabled(False)
-        row.addWidget(self.stop_btn)
-        box_layout.addLayout(row)
-
-        self.progress_bar = QtGui.QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setFormat("0%")
-        box_layout.addWidget(self.progress_bar)
-
-        debug_row = QtGui.QHBoxLayout()
-        self.debug_checkbox = QtGui.QCheckBox("Debug trace")
+        self.debug_checkbox = QtGui.QCheckBox("Debug")
         self.debug_checkbox.setChecked(is_debug_mode())
         self.debug_checkbox.toggled.connect(self._on_debug_toggled)
-        debug_row.addWidget(self.debug_checkbox)
+        opts.addWidget(self.debug_checkbox)
+        opts.addStretch(1)
 
-        self.open_debug_btn = QtGui.QPushButton("打开调试目录")
-        self.open_debug_btn.clicked.connect(self._on_open_debug_dir)
-        debug_row.addWidget(self.open_debug_btn)
-        box_layout.addLayout(debug_row)
-        layout.addWidget(box)
+        self.compress_btn = QtGui.QToolButton()
+        self.compress_btn.setText("压缩")
+        self.compress_btn.clicked.connect(self._runner.compress_chat_context)
+        opts.addWidget(self.compress_btn)
 
-    def _build_tabs(self, layout):
-        self.tabs = QtGui.QTabWidget()
+        self.new_chat_btn = QtGui.QToolButton()
+        self.new_chat_btn.setText("新对话")
+        self.new_chat_btn.clicked.connect(self._on_new_chat)
+        opts.addWidget(self.new_chat_btn)
+        layout.addLayout(opts)
 
-        self.plan_tree = QtGui.QTreeWidget()
-        self.plan_tree.setColumnCount(3)
-        self.plan_tree.setHeaderLabels(["阶段", "状态", "目标 / 成功标准"])
-        self.plan_tree.setRootIsDecorated(False)
-        self.plan_tree.setAlternatingRowColors(True)
-        self.plan_tree.setEditTriggers(QtGui.QAbstractItemView.NoEditTriggers)
-        self.plan_tree.header().setStretchLastSection(True)
-        self.tabs.addTab(self.plan_tree, "计划")
-
-        self.trace_table = QtGui.QTableWidget()
-        self.trace_table.setColumnCount(4)
-        self.trace_table.setHorizontalHeaderLabels(["类型", "名称", "状态", "摘要"])
-        self.trace_table.setEditTriggers(QtGui.QAbstractItemView.NoEditTriggers)
-        self.trace_table.setSelectionBehavior(QtGui.QAbstractItemView.SelectRows)
-        self.trace_table.setAlternatingRowColors(True)
-        self.trace_table.horizontalHeader().setStretchLastSection(True)
-        self.tabs.addTab(self.trace_table, "查询 / 验证")
+    def _build_log_drawer(self, layout):
+        self.log_toggle = QtGui.QToolButton()
+        self.log_toggle.setText("日志 ▸")
+        self.log_toggle.setCheckable(True)
+        self.log_toggle.setChecked(False)
+        self.log_toggle.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+        self.log_toggle.toggled.connect(self._on_log_toggled)
+        layout.addWidget(self.log_toggle)
 
         self.log_edit = QtGui.QTextEdit()
+        self.log_edit.setObjectName("DebugLog")
         self.log_edit.setReadOnly(True)
-        self.log_edit.setPlaceholderText("Agent 的规划、工具调用和执行日志会显示在这里。")
-        self.tabs.addTab(self.log_edit, "日志")
+        self.log_edit.setMaximumHeight(140)
+        self.log_edit.setVisible(False)
+        layout.addWidget(self.log_edit)
 
-        layout.addWidget(self.tabs, 1)
+    # ── actions ───────────────────────────────────────────────────
 
-    def _apply_style(self):
-        self.setStyleSheet(
-            """
-            #AICADPanelBody {
-                background: #f6f7f9;
-                color: #20242a;
-            }
-            #PanelTitle {
-                font-size: 18px;
-                font-weight: 700;
-                color: #111827;
-            }
-            #PanelSubtitle {
-                color: #667085;
-                margin-bottom: 4px;
-            }
-            QGroupBox {
-                border: 1px solid #d9dde5;
-                border-radius: 6px;
-                margin-top: 8px;
-                padding-top: 12px;
-                background: #ffffff;
-                font-weight: 600;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 8px;
-                padding: 0 4px;
-                color: #344054;
-            }
-            QTextEdit, QTreeWidget, QTableWidget {
-                border: 1px solid #d0d5dd;
-                border-radius: 4px;
-                background: #ffffff;
-                selection-background-color: #dbeafe;
-            }
-            QPushButton {
-                min-height: 26px;
-                padding: 4px 10px;
-                border: 1px solid #b9c2d0;
-                border-radius: 4px;
-                background: #ffffff;
-            }
-            QPushButton:hover {
-                background: #eef4ff;
-                border-color: #7aa7e8;
-            }
-            QPushButton:disabled {
-                color: #98a2b3;
-                background: #f2f4f7;
-            }
-            QTabWidget::pane {
-                border: 1px solid #d0d5dd;
-                background: #ffffff;
-            }
-            QTabBar::tab {
-                padding: 6px 10px;
-                border: 1px solid #d0d5dd;
-                border-bottom: none;
-                background: #edf0f5;
-            }
-            QTabBar::tab:selected {
-                background: #ffffff;
-                color: #1d4ed8;
-                font-weight: 600;
-            }
-            QProgressBar {
-                height: 16px;
-                border: 1px solid #d0d5dd;
-                border-radius: 4px;
-                background: #ffffff;
-                text-align: center;
-            }
-            QProgressBar::chunk {
-                background: #2563eb;
-                border-radius: 3px;
-            }
-            """
-        )
-
-    def _status_label(self, text):
-        label = QtGui.QLabel(text)
-        label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-        label.setWordWrap(True)
-        return label
-
-    def _on_start_plan(self):
-        user_input = self.input_edit.toPlainText().strip()
-        if not user_input:
-            self._log("错误: 请输入建模需求。")
-            return
-
-        self._reset_run_view()
+    def _on_send(self, text):
         self._runner.set_debug_mode(self.debug_checkbox.isChecked())
-        if self.debug_checkbox.isChecked():
-            self._log(f"[调试] 已开启，日志将写入: {get_debug_sessions_dir()}")
-
-        self._set_status("生成计划中")
-        self._set_exec_buttons(False)
-        self.start_plan_btn.setEnabled(False)
-        self._runner.start_plan(user_input)
-
-    def _on_plan_generated(self, result):
-        self.start_plan_btn.setEnabled(True)
-        self.step_btn.setEnabled(True)
-        self.auto_btn.setEnabled(True)
-        self.session_value.setText(result.get("session_id", "-"))
-        self._populate_plan(result)
-        self._sync_status_from_plan(result)
-        self._set_status("计划已生成")
-        self._log("\n可以点击 [单步] 逐轮观察，也可以点击 [自动] 连续执行。")
-
-    def _on_step(self):
-        self._runner.set_debug_mode(self.debug_checkbox.isChecked())
-        self._set_status("执行单步")
-        self.pause_btn.setEnabled(True)
-        self.stop_btn.setEnabled(True)
-        self._runner.run_step()
-
-    def _on_auto(self):
-        self._runner.set_debug_mode(self.debug_checkbox.isChecked())
-        self._set_status("自动执行")
-        self.pause_btn.setEnabled(True)
-        self.stop_btn.setEnabled(True)
-        self.auto_btn.setEnabled(False)
-        self.step_btn.setEnabled(False)
-        self._runner.run_auto()
-
-    def _on_step_completed(self, result):
-        kind = result.get("kind") or "act"
-        tool = result.get("tool") or result.get("tool_name") or "-"
-        status = result.get("status", "-")
-        if kind == "query":
-            self._add_trace_row("查询", tool, status, self._summarize_query(result))
-            self.tabs.setCurrentWidget(self.trace_table)
+        self._runner.set_plan_mode(self.plan_mode_cb.isChecked())
+        self._runner.set_vision_enabled(self.vision_cb.isChecked())
+        if getattr(self._runner, "_chat_busy", False):
+            self._set_status("已排队 — 当前轮结束后发送")
         else:
-            self._add_trace_row("执行", tool, status, self._summarize_execution(result))
+            self._set_status("思考中…")
+        self._runner.send_chat(text)
 
-    def _on_evaluation_completed(self, result):
-        self._sync_status_from_plan(result)
-        validator_results = result.get("validator_results") or []
-        for item in validator_results:
-            status = "通过" if item.get("passed") else "警告"
-            if item.get("validator") in ("verify_object_exists", "verify_shape_valid") and not item.get("passed"):
-                status = "失败"
-            self._add_trace_row(
-                "验证",
-                item.get("validator", "-"),
-                status,
-                self._summarize_validator(item),
-            )
-        if validator_results:
-            self.tabs.setCurrentWidget(self.trace_table)
-
-    def _on_phase_changed(self, phase_id):
-        self.phase_value.setText(phase_id)
-        for index, step_id in enumerate(self._phase_order):
-            item = self._phase_items.get(step_id)
-            if not item:
-                continue
-            if step_id == phase_id:
-                item.setText(1, "当前")
-                self.plan_tree.setCurrentItem(item)
-                self._set_row_color(item, "#1d4ed8")
-            elif phase_id in self._phase_order and index < self._phase_order.index(phase_id):
-                item.setText(1, "已完成")
-                self._set_row_color(item, "#047857")
-            else:
-                item.setText(1, "待执行")
-                self._set_row_color(item, "#475467")
-
-    def _on_execution_finished(self, success, message):
-        self._set_exec_buttons(False)
-        self.step_btn.setEnabled(True)
-        self.auto_btn.setEnabled(True)
-        self.pause_btn.setEnabled(False)
-        self.stop_btn.setEnabled(False)
-        self.start_plan_btn.setEnabled(True)
-        self._set_status("完成" if success else "已停止")
-        if success:
-            self.progress_bar.setValue(100)
-            self.progress_bar.setFormat("100%")
-        self._log(f"\n=== 执行结束: {message} ===")
-
-    def _on_error(self, message):
-        self._log(f"错误: {message}")
-        self._set_status("错误")
-        self.start_plan_btn.setEnabled(True)
-        self._set_exec_buttons(False)
-
-    def _set_exec_buttons(self, enabled):
-        self.step_btn.setEnabled(enabled)
-        self.auto_btn.setEnabled(enabled)
+    def _on_new_chat(self):
+        self._runner.new_chat()
+        self.transcript.clear()
+        self.session_value.setText("Session: -")
+        self.ctx_value.setText("")
+        self._set_status("新对话")
+        self.composer.focus_input()
 
     def _on_debug_toggled(self, checked):
         set_debug_mode(checked)
         self._runner.set_debug_mode(checked)
-        state = "开启" if checked else "关闭"
-        self._log(f"[调试] Debug trace 已{state}")
+        if checked:
+            self._log(f"[调试] 目录: {get_debug_sessions_dir()}")
+            self.log_toggle.setChecked(True)
 
-    def _on_open_debug_dir(self):
-        import os
-        import subprocess
+    def _on_log_toggled(self, open_):
+        self.log_edit.setVisible(open_)
+        self.log_toggle.setText("日志 ▾" if open_ else "日志 ▸")
 
-        path = resolve_debug_open_path(self._runner.debug_session_path)
-        os.makedirs(path, exist_ok=True)
-        if os.name == "nt":
-            os.startfile(path)
-        elif hasattr(subprocess, "run"):
-            subprocess.run(["xdg-open", path], check=False)
-        self._log(f"[调试] 已打开目录: {path}")
+    # ── runner → UI ───────────────────────────────────────────────
 
-    def _reset_run_view(self):
-        self.log_edit.clear()
-        self.plan_tree.clear()
-        self.trace_table.setRowCount(0)
-        self._phase_items = {}
-        self._phase_order = []
-        self.session_value.setText("-")
-        self.phase_value.setText("-")
-        self.step_value.setText("-")
-        self.progress_bar.setValue(0)
-        self.progress_bar.setFormat("0%")
+    def _on_chat_event(self, event):
+        kind = (event or {}).get("kind") or "system"
+        text = (event or {}).get("text") or ""
+        meta = (event or {}).get("meta") or {}
+        self.transcript.append_event(kind, text, meta)
 
-    def _populate_plan(self, result):
-        self.plan_tree.clear()
-        self._phase_items = {}
-        self._phase_order = []
+    def _on_chat_reply_meta(self, result):
+        """Update session chrome from ChatResponse; content already via chat_event."""
+        sid = result.get("session_id") or "-"
+        self.session_value.setText(f"Session: {sid}")
+        chars = result.get("context_chars", 0)
+        turns = result.get("turn_count", 0)
+        if chars or turns:
+            self.ctx_value.setText(f"{turns} 回合 · {chars} 字")
 
-        steps = []
-        queue = result.get("abstract_step_queue") or {}
-        if queue.get("steps"):
-            steps = queue.get("steps", [])
-        else:
-            steps = result.get("phases", [])
+        status = result.get("status", "")
+        if status == "queued":
+            self._set_status("已排队")
+        elif status == "awaiting_tools":
+            n = len(result.get("tool_calls") or [])
+            self._set_status(f"执行工具（{n}）…")
+        elif status == "awaiting_user":
+            self._set_status("等待你的消息")
+        elif status == "done":
+            self._set_status("本轮完成")
+        elif status == "error":
+            self._set_status("出错")
 
-        current = (
-            (result.get("current_abstract_step") or {}).get("step_id")
-            or queue.get("current_step_id")
-            or result.get("current_phase_id")
-        )
+    def _on_busy(self, busy):
+        self.composer.set_busy(busy)
+        if busy:
+            self._set_status("运行中…")
 
-        for index, step in enumerate(steps):
-            step_id = step.get("step_id") or step.get("phase_id") or f"step_{index + 1}"
-            title = step.get("title") or step.get("intent") or step.get("description") or ""
-            success = step.get("success_criteria") or step.get("expected_result") or ""
-            status = "当前" if step_id == current or (not current and index == 0) else "待执行"
-            item = QtGui.QTreeWidgetItem([step_id, status, self._compact(f"{title} {success}")])
-            self.plan_tree.addTopLevelItem(item)
-            self._phase_items[step_id] = item
-            self._phase_order.append(step_id)
-            self._set_row_color(item, "#1d4ed8" if status == "当前" else "#475467")
+    def _on_error(self, err):
+        self.transcript.append_event("system", f"错误: {err}")
+        self._set_status("错误")
+        self._log(f"错误: {err}")
+        self.composer.set_busy(False)
 
-        self.plan_tree.resizeColumnToContents(0)
-        self.plan_tree.resizeColumnToContents(1)
+    def _on_finished(self, ok, message):
+        self.composer.set_busy(False)
+        self._set_status("完成" if ok else f"结束: {message}")
 
-    def _sync_status_from_plan(self, result):
-        queue = result.get("abstract_step_queue") or {}
-        current_step = result.get("current_abstract_step") or {}
-        current_id = current_step.get("step_id") or queue.get("current_step_id") or result.get("updated_current_phase_id")
-        if current_id:
-            self.phase_value.setText(current_id)
-            self.step_value.setText(current_step.get("title") or current_step.get("description") or current_id)
-            self._on_phase_changed(current_id)
-        self._update_progress(queue)
+    def _on_session_restored(self, result):
+        sid = result.get("session_id", "-")
+        self.session_value.setText(f"Session: {sid}")
+        self.transcript.append_event("system", f"会话已恢复: {sid}")
+        self._set_status("已恢复")
 
-    def _update_progress(self, queue):
-        steps = queue.get("steps", []) if queue else []
-        if not steps:
-            return
-        done = 0
-        for step in steps:
-            status = str(step.get("status", "")).lower()
-            if status in ("completed", "done", "success"):
-                done += 1
-        value = int(round((done / float(len(steps))) * 100))
-        self.progress_bar.setValue(value)
-        self.progress_bar.setFormat(f"{done}/{len(steps)}")
+    def _on_paused(self, paused):
+        self._set_status("已暂停" if paused else "运行中")
 
-    def _add_trace_row(self, kind, name, status, summary):
-        row = self.trace_table.rowCount()
-        self.trace_table.insertRow(row)
-        values = [kind, name, status, summary]
-        for col, value in enumerate(values):
-            item = QtGui.QTableWidgetItem(str(value or "-"))
-            if status in ("失败", "error"):
-                item.setForeground(QtGui.QBrush(QtGui.QColor("#b42318")))
-            elif status in ("警告", "warning"):
-                item.setForeground(QtGui.QBrush(QtGui.QColor("#b54708")))
-            elif status in ("通过", "success"):
-                item.setForeground(QtGui.QBrush(QtGui.QColor("#027a48")))
-            self.trace_table.setItem(row, col, item)
-        self.trace_table.resizeRowsToContents()
-
-    def _summarize_query(self, result):
-        query_result = result.get("query_result") or {}
-        tool = result.get("tool") or ""
-        if tool == "measure_gap":
-            return "axis={axis}, gap={gap}, relation={relation}".format(
-                axis=query_result.get("axis", "-"),
-                gap=query_result.get("gap", query_result.get("signed_distance", "-")),
-                relation=query_result.get("relation", "-"),
-            )
-        if tool == "compare_orientation":
-            return "expected={expected}, actual={actual}, passed={passed}".format(
-                expected=query_result.get("expected_axis", "-"),
-                actual=query_result.get("actual_axis", "-"),
-                passed=query_result.get("passed", "-"),
-            )
-        if tool == "summarize_document":
-            objects = query_result.get("objects") or []
-            return f"objects={len(objects)}"
-        target = result.get("query_target") or ", ".join(result.get("query_targets") or [])
-        bbox = query_result.get("bbox") or {}
-        topo = query_result.get("topology") or {}
-        if bbox:
-            return self._compact(f"target={target} bbox={bbox}")
-        if topo:
-            return self._compact(
-                "target={target} type={type} valid={valid} volume={volume}".format(
-                    target=target,
-                    type=query_result.get("type", "-"),
-                    valid=topo.get("is_valid", "-"),
-                    volume=topo.get("volume", "-"),
-                )
-            )
-        return self._compact(f"target={target} type={query_result.get('type', '-')}")
-
-    def _summarize_execution(self, result):
-        if result.get("status") != "success":
-            return result.get("message", "")
-        produced = result.get("produced_objects") or []
-        if produced:
-            return "produced=" + ", ".join(produced)
-        return result.get("message") or "无新对象"
-
-    def _summarize_validator(self, item):
-        if item.get("passed"):
-            return item.get("message") or "通过"
-        parts = [
-            item.get("error_code") or item.get("message") or "未通过",
-            f"expected={item.get('expected')}" if item.get("expected") is not None else "",
-            f"actual={item.get('actual')}" if item.get("actual") is not None else "",
-            f"delta={item.get('delta')}" if item.get("delta") is not None else "",
-        ]
-        if item.get("repair_hint"):
-            parts.append(f"hint={item.get('repair_hint')}")
-        return self._compact(" ".join(p for p in parts if p))
+    def _log(self, msg):
+        self.log_edit.append(msg)
 
     def _set_status(self, text):
         self.status_value.setText(text)
 
-    def _set_row_color(self, item, color):
-        brush = QtGui.QBrush(QtGui.QColor(color))
-        for col in range(self.plan_tree.columnCount()):
-            item.setForeground(col, brush)
-
-    def _compact(self, text, limit=180):
-        text = " ".join(str(text or "").split())
-        if len(text) <= limit:
-            return text
-        return text[: limit - 3] + "..."
-
-    def _log(self, text):
-        self.log_edit.append(text)
-        scrollbar = self.log_edit.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
-
-
-_panel_instance = None
+    def _apply_style(self):
+        self.setStyleSheet(
+            """
+            #AICADPanelBody { background: #f4f5f7; color: #20242a; }
+            #PanelTitle { font-size: 16px; font-weight: 700; color: #111827; }
+            #StatusLine { color: #4b5563; font-size: 12px; }
+            #ChatTranscript {
+                border: 1px solid #e5e7eb; border-radius: 8px;
+                background: #ffffff; padding: 8px;
+            }
+            #ComposerBar { background: transparent; }
+            #ComposerInput {
+                border: 1px solid #d1d5db; border-radius: 8px;
+                background: #ffffff; padding: 6px;
+            }
+            #ComposerHint { color: #9ca3af; font-size: 11px; }
+            #SendButton {
+                min-width: 72px; min-height: 28px;
+                background: #2563eb; color: white; border: none;
+                border-radius: 6px; font-weight: 600; padding: 4px 14px;
+            }
+            #SendButton:hover { background: #1d4ed8; }
+            #StopButton {
+                min-width: 64px; min-height: 28px;
+                background: #ffffff; color: #b91c1c;
+                border: 1px solid #fca5a5; border-radius: 6px; padding: 4px 12px;
+            }
+            #StopButton:hover { background: #fef2f2; }
+            #DebugLog {
+                border: 1px solid #e5e7eb; border-radius: 6px;
+                background: #111827; color: #e5e7eb; font-family: Consolas, monospace;
+                font-size: 11px;
+            }
+            QToolButton {
+                border: 1px solid #e5e7eb; border-radius: 4px;
+                background: #ffffff; padding: 3px 8px; color: #374151;
+            }
+            QToolButton:hover { background: #f3f4f6; }
+            QToolButton:checked { background: #eff6ff; border-color: #93c5fd; }
+            QCheckBox { color: #374151; spacing: 4px; }
+            """
+        )
 
 
 def show_panel():
-    """Create or show the AI CAD Agent panel in FreeCAD."""
-    global _panel_instance
     mw = FreeCADGui.getMainWindow()
-
-    if _panel_instance is None:
-        _panel_instance = AICADPanel(mw)
-        mw.addDockWidget(QtCore.Qt.RightDockWidgetArea, _panel_instance)
-    else:
-        _panel_instance.show()
-        _panel_instance.raise_()
+    existing = mw.findChild(QtGui.QDockWidget, "AICADPanel")
+    if existing:
+        # 布局大改后强制重建，避免旧控件残留
+        mw.removeDockWidget(existing)
+        existing.deleteLater()
+    panel = AICADPanel(mw)
+    mw.addDockWidget(QtCore.Qt.RightDockWidgetArea, panel)
+    panel.setVisible(True)
+    return panel

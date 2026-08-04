@@ -42,13 +42,30 @@ def rotate(doc, target="", axis="Z", angle=0, origin_x=0, origin_y=0, origin_z=0
 
 
 def scale(doc, target="", scale_x=1, scale_y=1, scale_z=1, result_name=None):
-    """Scale object shape uniformly or non-uniformly. Creates Part::Feature result."""
-    if float(scale_x) == 0 or float(scale_y) == 0 or float(scale_z) == 0:
+    """Scale object shape uniformly or non-uniformly. Creates Part::Feature result.
+
+    FreeCAD 1.1 Shape.scale(factor, [base]) is uniform-only; non-uniform uses Matrix.
+    """
+    sx, sy, sz = float(scale_x), float(scale_y), float(scale_z)
+    if sx == 0 or sy == 0 or sz == 0:
         raise ValueError(f"Scale factors must be non-zero, got {scale_x}x{scale_y}x{scale_z}")
     obj = get_object(doc, target)
-    shape = get_shape(obj)
+    # Must copy first: parametric Shape (Part::Sphere etc.) is immutable in FC 1.1+
+    shape = get_shape(obj).copy()
     center = shape.BoundBox.Center
-    scaled = shape.scale(float(scale_x), float(scale_y), float(scale_z), center)
+
+    if abs(sx - sy) < 1e-12 and abs(sy - sz) < 1e-12:
+        scaled = shape.scale(sx, center)
+        if scaled is None:
+            scaled = shape
+    else:
+        mat = FreeCAD.Matrix()
+        mat.move(FreeCAD.Vector(-center.x, -center.y, -center.z))
+        sm = FreeCAD.Matrix()
+        sm.scale(sx, sy, sz)
+        mat = sm.multiply(mat)
+        mat.move(center)
+        scaled = shape.transformGeometry(mat)
 
     out_name = result_name or f"{target}_Scaled"
     feat = doc.addObject("Part::Feature", out_name)
@@ -64,19 +81,222 @@ def scale(doc, target="", scale_x=1, scale_y=1, scale_z=1, result_name=None):
         "tool": "scale",
         "object": feat.Name,
         "source": target,
-        "scale": [scale_x, scale_y, scale_z],
+        "scale": [sx, sy, sz],
         "type": "Part::Feature",
     }
 
 
+def _unwrap_copy(copied):
+    """FreeCAD copyObject may return an object or a sequence."""
+    if isinstance(copied, (list, tuple)):
+        if not copied:
+            raise ValueError("copyObject returned an empty result")
+        return copied[0]
+    return copied
+
+
+def _pattern_instance_name(name_prefix: str, target: str, index: int) -> str:
+    prefix = (name_prefix or "").strip()
+    if prefix:
+        return f"{prefix}{index}"
+    return f"{target}_{index}"
+
+
 def copy_object(doc, target="", name="Copy"):
-    """Duplicate an object in the document."""
+    """Duplicate an object; result Name/Label equal `name` for reliable lookup.
+
+    FreeCAD Document.copyObject(obj, recursive=False, return_all=False) —
+    the 3rd argument is a bool, NOT a name. We copy, then materialize a
+    Part::Feature with the requested name so later tools can find it.
+    """
     src = get_object(doc, target)
-    copy = doc.copyObject(src, False, name)
-    copy.Label = name
+    out_name = str(name or "").strip()
+    if not out_name:
+        raise ValueError("copy_object requires a non-empty name")
+    if doc.getObject(out_name) is not None:
+        raise ValueError(f"Object already exists: {out_name}")
+
+    tmp = _unwrap_copy(doc.copyObject(src, False))
+    shape = get_shape(tmp).copy()
+    placement = FreeCAD.Placement(tmp.Placement)
+    tmp_name = tmp.Name
+    try:
+        doc.removeObject(tmp_name)
+    except Exception:
+        pass
+
+    feat = doc.addObject("Part::Feature", out_name)
+    feat.Label = out_name
+    feat.Shape = shape
+    feat.Placement = placement
+    # Do NOT set "source": copy is not a replacement; executor name_map would
+    # remap original → copy and break later modify_param / ops on the original.
     return {
         "tool": "copy_object",
-        "object": copy.Name,
-        "source": target,
-        "type": copy.TypeId,
+        "object": feat.Name,
+        "copied_from": target,
+        "type": feat.TypeId,
     }
+
+
+def polar_pattern(
+    doc,
+    target="",
+    count=4,
+    angle=360.0,
+    axis="Z",
+    origin_x=0.0,
+    origin_y=0.0,
+    origin_z=0.0,
+    name_prefix="",
+    fuse=False,
+    fuse_name="",
+):
+    """Circular array around an axis.
+
+    `count` = total instances including the original (at 0°).
+    Creates count-1 copies at i * (angle/count) for i=1..count-1.
+    Names: {name_prefix}2..{name_prefix}{count}, or {target}_2.. if prefix empty.
+    If fuse=True, fuse original+copies into fuse_name.
+    """
+    src = get_object(doc, target)
+    n = int(count)
+    if n < 2:
+        raise ValueError(f"polar_pattern count must be >= 2, got {count}")
+    step = float(angle) / float(n)
+
+    axis_map = {
+        "X": FreeCAD.Vector(1, 0, 0),
+        "Y": FreeCAD.Vector(0, 1, 0),
+        "Z": FreeCAD.Vector(0, 0, 1),
+    }
+    axis_vec = axis_map.get(str(axis).upper(), FreeCAD.Vector(0, 0, 1))
+    origin = FreeCAD.Vector(float(origin_x), float(origin_y), float(origin_z))
+
+    created = []
+    for i in range(1, n):
+        inst_name = _pattern_instance_name(name_prefix, target, i + 1)
+        if doc.getObject(inst_name) is not None:
+            raise ValueError(f"Object already exists: {inst_name}")
+        tmp = _unwrap_copy(doc.copyObject(src, False))
+        shape = get_shape(tmp).copy()
+        placement = FreeCAD.Placement(tmp.Placement)
+        try:
+            doc.removeObject(tmp.Name)
+        except Exception:
+            pass
+        feat = doc.addObject("Part::Feature", inst_name)
+        feat.Label = inst_name
+        feat.Shape = shape
+        placement.rotate(origin, axis_vec, step * i)
+        feat.Placement = placement
+        created.append(feat.Name)
+
+    result = {
+        "tool": "polar_pattern",
+        "object": target,
+        "created": created,
+        "count": n,
+        "angle": float(angle),
+        "axis": str(axis).upper(),
+        "step": step,
+    }
+
+    if fuse:
+        fname = str(fuse_name or "").strip()
+        if not fname:
+            raise ValueError("polar_pattern fuse=True requires fuse_name")
+        if doc.getObject(fname) is not None:
+            raise ValueError(f"Object already exists: {fname}")
+        members = [target] + created
+        fused = get_shape(get_object(doc, members[0]))
+        for m in members[1:]:
+            fused = fused.fuse(get_shape(get_object(doc, m)))
+        feat = doc.addObject("Part::Feature", fname)
+        feat.Label = fname
+        feat.Shape = fused
+        for m in members:
+            try:
+                get_object(doc, m).Visibility = False
+            except Exception:
+                pass
+        result["object"] = feat.Name
+        result["fused"] = feat.Name
+        result["type"] = "Part::Feature"
+
+    return result
+
+
+def linear_pattern(
+    doc,
+    target="",
+    count=2,
+    dx=10.0,
+    dy=0.0,
+    dz=0.0,
+    name_prefix="",
+    fuse=False,
+    fuse_name="",
+):
+    """Linear array along a spacing vector (dx, dy, dz) between neighbors.
+
+    `count` = total instances including the original.
+    Creates count-1 copies at i*(dx,dy,dz) for i=1..count-1.
+    """
+    src = get_object(doc, target)
+    n = int(count)
+    if n < 2:
+        raise ValueError(f"linear_pattern count must be >= 2, got {count}")
+
+    created = []
+    for i in range(1, n):
+        inst_name = _pattern_instance_name(name_prefix, target, i + 1)
+        if doc.getObject(inst_name) is not None:
+            raise ValueError(f"Object already exists: {inst_name}")
+        tmp = _unwrap_copy(doc.copyObject(src, False))
+        shape = get_shape(tmp).copy()
+        placement = FreeCAD.Placement(tmp.Placement)
+        try:
+            doc.removeObject(tmp.Name)
+        except Exception:
+            pass
+        feat = doc.addObject("Part::Feature", inst_name)
+        feat.Label = inst_name
+        feat.Shape = shape
+        placement.Base = placement.Base + FreeCAD.Vector(
+            float(dx) * i, float(dy) * i, float(dz) * i
+        )
+        feat.Placement = placement
+        created.append(feat.Name)
+
+    result = {
+        "tool": "linear_pattern",
+        "object": target,
+        "created": created,
+        "count": n,
+        "spacing": [float(dx), float(dy), float(dz)],
+    }
+
+    if fuse:
+        fname = str(fuse_name or "").strip()
+        if not fname:
+            raise ValueError("linear_pattern fuse=True requires fuse_name")
+        if doc.getObject(fname) is not None:
+            raise ValueError(f"Object already exists: {fname}")
+        members = [target] + created
+        fused = get_shape(get_object(doc, members[0]))
+        for m in members[1:]:
+            fused = fused.fuse(get_shape(get_object(doc, m)))
+        feat = doc.addObject("Part::Feature", fname)
+        feat.Label = fname
+        feat.Shape = fused
+        for m in members:
+            try:
+                get_object(doc, m).Visibility = False
+            except Exception:
+                pass
+        result["object"] = feat.Name
+        result["fused"] = feat.Name
+        result["type"] = "Part::Feature"
+
+    return result

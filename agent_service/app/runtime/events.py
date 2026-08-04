@@ -1,0 +1,33 @@
+"""Canonical session event types for durable agent runs."""
+
+from __future__ import annotations
+
+
+class EventType:
+    SESSION_STARTED = "SESSION_STARTED"
+    PLAN_CREATED = "PLAN_CREATED"
+    STEP_STARTED = "STEP_STARTED"
+    CONTEXT_BUILT = "CONTEXT_BUILT"
+    LLM_STARTED = "LLM_STARTED"
+    LLM_SUCCEEDED = "LLM_SUCCEEDED"
+    LLM_FAILED = "LLM_FAILED"
+    TOOL_STARTED = "TOOL_STARTED"
+    TOOL_SUCCEEDED = "TOOL_SUCCEEDED"
+    TOOL_FAILED = "TOOL_FAILED"
+    CAD_STATE_OBSERVED = "CAD_STATE_OBSERVED"
+    STEP_COMPLETED = "STEP_COMPLETED"
+    STEP_REPLANNED = "STEP_REPLANNED"
+    USER_PAUSED = "USER_PAUSED"
+    USER_RESUMED = "USER_RESUMED"
+    DOCUMENT_CHANGED_BY_USER = "DOCUMENT_CHANGED_BY_USER"
+    CHECKPOINT_SAVED = "CHECKPOINT_SAVED"
+    SESSION_COMPLETED = "SESSION_COMPLETED"
+    SESSION_ABORTED = "SESSION_ABORTED"
+    ERROR = "ERROR"
+
+
+ALL_EVENT_TYPES = {
+    getattr(EventType, name)
+    for name in dir(EventType)
+    if name.isupper() and not name.startswith("_")
+}
