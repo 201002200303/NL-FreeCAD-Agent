@@ -1,9 +1,29 @@
+"""归档用 response schema 快照（不可作 live import）。"""
+
 from pydantic import BaseModel, Field
 from typing import Any, Optional
-from app.schemas.cad_plan import PlanStep
-from app.schemas.session import Phase, ToolCall
-from app.cad_spec.schemas import CADSpec
-from app.inspection.impact_map import ImpactMap
+
+from .cad_plan import PlanStep
+from app.schemas.session import ToolCall
+
+
+class Phase(BaseModel):
+    phase_id: str
+    title: str = ""
+    intent: str = ""
+    success_criteria: list[str] = Field(default_factory=list)
+
+
+class CADSpec(BaseModel):
+    """占位：完整 CADSpec 见 archive packages/cad_spec。"""
+
+    model_config = {"extra": "allow"}
+
+
+class ImpactMap(BaseModel):
+    """占位：完整 ImpactMap 见 archive packages/inspection。"""
+
+    model_config = {"extra": "allow"}
 
 
 class HealthResponse(BaseModel):

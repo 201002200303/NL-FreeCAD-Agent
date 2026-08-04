@@ -30,3 +30,10 @@
 - API：`/agent/chat`、`/agent/compress`、`/agent/capabilities`、session lifecycle
 - 提示词：`app/prompts/chat_*.md` 等
 - 代码：`app/workflow/chat.py`
+- 客户端：`freecad_addon/AICADAgent/agent_runner.py`（仅 chat 循环）
+
+## 后续迁入本归档的文件
+
+- `schemas/cad_plan.py` / `cad_tools.py`（旧 plan schema）
+- `replay_trace.py`（V0.8 next_step/evaluate 轨迹校验）
+- `../tutorial/`（早期教学示例）

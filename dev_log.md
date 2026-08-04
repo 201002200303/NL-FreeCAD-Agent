@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-08-04: chat-first 代码整理（删旧闭环耦合）
+
+**客户端**: `agent_runner.py` 重写为仅 chat（~650 行）；删 AgentSession/start_plan/next_step/evaluate/restore；pause/resume chat-safe；panel 去 legacy 信号。
+**服务端**: 瘦 `schemas/session.py`（仅 ToolCall/ExecutionResult）；删 extractor、tools/registry；cad_plan/cad_tools/replay_trace → archive；tutorial → archive/tutorial。
+**验**: `pytest` 57 passed。
+
 ## 2026-08-04: 旧架构清理可行性评估 + 检查点提交
 
 **评估**: `docs/legacy_cleanup_feasibility.md` — 客户端旧闭环可优先删；archive 可选；runtime/memory 勿整包删。

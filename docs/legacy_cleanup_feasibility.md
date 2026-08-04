@@ -3,6 +3,8 @@
 日期：2026-08-04  
 范围：chat-first 主路径已稳定后，旧闭环与冗余代码可否删除。
 
+**状态（已落地）**：Phase A 完成——`agent_runner` 仅 chat；旧 schema/replay/tutorial 已归档；`pytest` 57 passed。
+
 ## 结论摘要
 
 | 目标 | 可行性 | 建议 |

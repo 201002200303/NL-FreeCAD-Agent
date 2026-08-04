@@ -4,7 +4,7 @@
 但单步工具调用需要的恰好是被剥掉的那部分，而记忆包只留一句 `goal`，
 于是每一步都在重新猜尺寸和坐标系。
 
-本模块是需求原文唯一的保管处：原样保留，渲染进每一轮 next_step / evaluate 提示词。
+本模块是需求原文唯一的保管处：原样保留，渲染进 chat system / design brief。
 """
 
 from __future__ import annotations

@@ -93,12 +93,7 @@ class CadToolExecutor:
         return results
 
     def execute_tool_call(self, tool_call: dict) -> dict:
-        """Execute a single tool call with enhanced result structure.
-
-        This is the new V0.7 API for the closed-loop architecture.
-        Returns a unified result dict with call_id, produced_objects,
-        source_objects, name_map_update, etc.
-        """
+        """Execute a single tool call; returns call_id / produced_objects / name_map_update."""
         call_id = tool_call.get("call_id", "unknown")
         tool_name = tool_call.get("tool", "")
         args = tool_call.get("args", {})

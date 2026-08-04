@@ -3,7 +3,7 @@
 一个 session = 一个文档 + 一条持续 transcript。用户随时发消息；模型用自然语言
 回复，并可附带 tool_calls。客户端执行工具后把结果回灌，形成真正的 agent loop。
 
-旧的 start_plan / next_step / evaluate_step 三段式仍保留作兼容；新 UI 走本模块。
+主路径唯一工作流；旧三段式已归档至 archive/legacy_closed_loop。
 """
 
 from __future__ import annotations

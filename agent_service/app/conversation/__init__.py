@@ -1,11 +1,11 @@
-"""对话层：一个 session 内跨 HTTP 端点累积的消息流。
+"""对话层：一个 session 内跨 HTTP 请求累积的消息流。
 
 用法（在 HTTP 端点包住工作流调用，与 trace 同层）：
 
     with conversation_scope(session_id):
-        result = workflow.next_step(...)
+        result = chat_workflow.chat_turn(...)
 
-作用域内的 `call_llm` 会自动带上历史回合，并把本轮记进去；作用域退出时落库。
+作用域内的 `call_llm` 会自动带上历史回合；chat_turn 自行写入精简回合。
 用 contextvar 而不是逐层传参，与 `app.debug.trace_logger` 保持同一种写法。
 """
 

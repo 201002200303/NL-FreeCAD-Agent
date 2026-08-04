@@ -52,13 +52,7 @@ class AICADPanel(QtGui.QDockWidget):
         self._runner.error_occurred.connect(self._on_error)
         self._runner.execution_finished.connect(self._on_finished)
         self._runner.log_message.connect(self._log)
-        if hasattr(self._runner, "session_restored"):
-            self._runner.session_restored.connect(self._on_session_restored)
-        if hasattr(self._runner, "paused_state_changed"):
-            self._runner.paused_state_changed.connect(self._on_paused)
-        # legacy signals unused by this UI
-        self._runner.plan_generated.connect(lambda *_: None)
-        self._runner.step_completed.connect(lambda *_: None)
+        self._runner.paused_state_changed.connect(self._on_paused)
         self._runner.chat_reply.connect(self._on_chat_reply_meta)
 
     # ── layout ────────────────────────────────────────────────────
@@ -203,12 +197,6 @@ class AICADPanel(QtGui.QDockWidget):
     def _on_finished(self, ok, message):
         self.composer.set_busy(False)
         self._set_status("完成" if ok else f"结束: {message}")
-
-    def _on_session_restored(self, result):
-        sid = result.get("session_id", "-")
-        self.session_value.setText(f"Session: {sid}")
-        self.transcript.append_event("system", f"会话已恢复: {sid}")
-        self._set_status("已恢复")
 
     def _on_paused(self, paused):
         self._set_status("已暂停" if paused else "运行中")
