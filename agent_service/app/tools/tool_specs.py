@@ -136,7 +136,12 @@ TOOL_SPECS: dict = {
         "required": ["target", "size"],
     },
     "cut_hole": {
-        "description": "在目标实体上打圆柱孔（默认在中心）。默认生成新对象 {target}_Hole，原对象隐藏",
+        "description": (
+            "打圆柱孔。默认：创建钻孔刀圆柱 + Part::Cut 布尔求差，结果名默认 {target}_Hole；"
+            "若传 body 则走草图圆+PartDesign Pocket。"
+            "成功后基体隐藏但树中仍在——后续必须引用返回的结果对象名，不要再改旧 target。"
+            "失败不会隐藏基体。"
+        ),
         "parameters": {
             "target": {"type": "string", "description": "目标对象名称"},
             "hole_diameter": {"type": "float", "description": "孔径 (mm)"},
@@ -144,22 +149,20 @@ TOOL_SPECS: dict = {
             "pos_x": {"type": "float", "description": "孔中心 X（可选，默认几何中心）"},
             "pos_y": {"type": "float", "description": "孔中心 Y（可选）"},
             "pos_z": {"type": "float", "description": "孔中心 Z（可选）"},
+            "axis": {
+                "type": "string",
+                "default": "Z",
+                "description": "钻孔轴向 X/Y/Z（仅 Part::Cut 路径；Pocket 路径为草图法向）",
+            },
+            "body": {
+                "type": "string",
+                "description": "可选 PartDesign Body；提供则用草图圆+Pocket 打孔",
+            },
             "result_name": {"type": "string", "description": "结果对象名称（可选）"},
         },
         "required": ["target", "hole_diameter"],
     },
-    "mirror": {
-        "description": "镜像复制目标实体",
-        "parameters": {
-            "target": {"type": "string", "description": "源对象名称"},
-            "name": {"type": "string", "description": "镜像结果对象名称"},
-            "plane": {"type": "string", "default": "XY", "description": "镜像平面: XY, XZ, YZ"},
-            "origin_x": {"type": "float", "default": 0},
-            "origin_y": {"type": "float", "default": 0},
-            "origin_z": {"type": "float", "default": 0},
-        },
-        "required": ["target", "name"],
-    },
+    # mirror 已下线：几何镜像易藏源/Placement 双重偏移；对称改用对侧 create_* 或阵列
     # ── transform ──
     "set_placement": {
         "description": "设置对象的绝对位置和绕 X/Y/Z 轴旋转（度，非欧拉 YPR）",
@@ -277,8 +280,9 @@ TOOL_SPECS: dict = {
     },
     "align_objects": {
         "description": (
-            "相对对齐：按世界 bbox 把 target 对齐到 reference（优先于 set_placement/move，避免猜绝对坐标）。"
-            "mode=stack 表示 target.min 贴 reference.max（堆叠/并排）"
+            "相对对齐：只沿 axis 移动 target 的世界 bbox（另两轴不动）。"
+            "mode=stack：target.min 贴 reference.max。"
+            "侧向接到肩/髋时：先 place_relative 到 right/left，再用 align 调 Z，不要指望一次 stack 带上 XY"
         ),
         "parameters": {
             "target": {"type": "string", "description": "要移动的对象"},
@@ -295,8 +299,9 @@ TOOL_SPECS: dict = {
     },
     "place_relative": {
         "description": (
-            "相对放置：把 target 的 bbox 中心放到 reference 的锚点 + (dx,dy,dz)。"
-            "优先于手算绝对坐标再 set_placement"
+            "相对放置：target 的 bbox 中心 → reference 锚点 +(dx,dy,dz)。"
+            "锚点世界轴：left=-X, right=+X, front=-Y, back=+Y, top=+Z, bottom=-Z, center=中心。"
+            "左右肢体用 left/right；前后件用 front/back。禁止把 right 理解成「身体右侧若你自定前=+X」"
         ),
         "parameters": {
             "target": {"type": "string", "description": "要移动的对象"},
@@ -304,7 +309,7 @@ TOOL_SPECS: dict = {
             "anchor": {
                 "type": "string",
                 "default": "center",
-                "description": "center/top/bottom/left/right/front/back",
+                "description": "center|top|bottom|left(-X)|right(+X)|front(-Y)|back(+Y)",
             },
             "dx": {"type": "float", "default": 0},
             "dy": {"type": "float", "default": 0},

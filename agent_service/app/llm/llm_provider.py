@@ -28,8 +28,11 @@ from app.tools.tool_registry import (
 _env_path = Path(__file__).resolve().parent.parent.parent / ".env"
 load_dotenv(_env_path)
 
-LLM_MAX_ATTEMPTS = 3
-LLM_RETRY_BASE_DELAY = 1.0
+LLM_MAX_ATTEMPTS = int(os.getenv("LLM_MAX_ATTEMPTS", "2") or "2")
+LLM_RETRY_BASE_DELAY = float(os.getenv("LLM_RETRY_BASE_DELAY", "1.0") or "1.0")
+# max_tokens = 输出上限（与输入里的工具表无关）。40960 过大易拖慢/超时；默认给足一轮多 tool_calls
+LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "16384") or "16384")
+LLM_TIMEOUT_SEC = float(os.getenv("LLM_TIMEOUT_SEC", "180") or "180")
 
 
 def _get_llm_config() -> tuple[str, str, str]:
@@ -182,20 +185,36 @@ def _attempt_llm_call(
 ) -> tuple[Optional[dict], object, Optional[str], str]:
     from openai import OpenAI
 
-    client = OpenAI(api_key=api_key, base_url=base_url)
-    response = client.chat.completions.create(
+    client = OpenAI(api_key=api_key, base_url=base_url, timeout=LLM_TIMEOUT_SEC)
+    t0 = time.time()
+    # qwen3.x 推理模型 thinking 很重；能关则关，不支持时回退
+    kwargs = dict(
         model=model,
         messages=messages,
         response_format={"type": "json_object"},
         temperature=0.3,
-        max_tokens=40960,
+        max_tokens=LLM_MAX_TOKENS,
     )
+    try:
+        response = client.chat.completions.create(
+            **kwargs, extra_body={"enable_thinking": False}
+        )
+    except Exception as exc:
+        msg = str(exc).lower()
+        if "enable_thinking" in msg or "thinking" in msg or "invalidparameter" in msg:
+            response = client.chat.completions.create(**kwargs)
+        else:
+            raise
     content = _message_text(response.choices[0].message)
+    print(
+        f"[LLM Provider] ok in {time.time() - t0:.1f}s "
+        f"model={model} out_chars={len(content)} max_tokens={LLM_MAX_TOKENS}"
+    )
     try:
         return _extract_json_object(content), response, None, content
     except json.JSONDecodeError as e:
         print(f"[LLM Provider] JSON 解析失败: {e}")
-        print(f"[LLM Provider] 原始输出: {content}")
+        print(f"[LLM Provider] 原始输出: {content[:800]}")
         return None, response, f"JSONDecodeError: {e}", content
 
 

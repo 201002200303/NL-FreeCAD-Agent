@@ -89,10 +89,11 @@ def run_tests():
     }))
     check("cut_hole", r.get("status") == "success", r)
 
-    r = ex.execute_step(_step("s11", "mirror", {
-        "target": "Ball", "name": "BallMirror", "plane": "XY",
+    # mirror 已从 TOOL_REGISTRY 移除；对称改对侧 create
+    r = ex.execute_step(_step("s11", "copy_object", {
+        "target": "Ball", "name": "BallCopy",
     }))
-    check("mirror", r.get("status") == "success", r)
+    check("copy_object", r.get("status") == "success", r)
 
     # Export
     tmp = tempfile.gettempdir()

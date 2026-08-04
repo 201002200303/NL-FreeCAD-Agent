@@ -14,6 +14,8 @@ from AICADAgent.session_memory import SessionMemory
 from AICADAgent.viewport import capture_viewport
 
 AGENT_BASE_URL = "http://127.0.0.1:8765"
+# 含工具列表的 chat 单轮常 30–90s；视觉+多轮回灌更容易超时，给足余量
+HTTP_TIMEOUT_SEC = 600
 
 
 def _format_soft_plan(plan: dict | None) -> str:
@@ -177,7 +179,7 @@ class HTTPWorker(QtCore.QThread):
                 headers=headers,
                 method=self.method,
             )
-            with urllib.request.urlopen(req, timeout=300) as resp:
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SEC) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
                 self.request_completed.emit(result)
         except Exception as e:
@@ -1068,6 +1070,13 @@ class AgentRunner(QtCore.QObject):
         self._set_chat_busy(True)
         preview = (message or "（回传工具结果）")[:80]
         self.log_message.emit(f"→ chat: {preview}")
+        # 立刻给 UI 反馈：模型侧常需数十秒，此前会像「没响应」
+        wait_hint = (
+            "正在请求模型…"
+            if message
+            else "正在根据工具结果继续规划…"
+        )
+        self._emit_chat("thinking", wait_hint, label="wait")
         worker = HTTPWorker("/agent/chat", payload, self.debug_mode, parent=self)
         worker.request_completed.connect(
             lambda r, e=epoch: self._on_chat_response(r, e)
@@ -1188,7 +1197,13 @@ class AgentRunner(QtCore.QObject):
             }
         status = exec_result.get("status", "?")
         produced = exec_result.get("produced_objects") or []
-        if status == "success":
+        if exec_result.get("skipped_duplicate"):
+            # 未真正执行：勿显示 ✓，否则会误以为新建了对象
+            detail = f"↷ 跳过重复 {tool}"
+            if produced:
+                detail += f"（缓存产出 {', '.join(map(str, produced))}）"
+            detail += " — 同 call_id 已执行过，本次未改文档"
+        elif status == "success":
             detail = f"✓ {tool}"
             if produced:
                 detail += f" → {', '.join(map(str, produced))}"

@@ -31,8 +31,8 @@ TOOL_CATEGORIES: dict[str, dict] = {
     },
     "features": {
         "label": "特征操作",
-        "description": "倒圆角、倒角、打孔、镜像",
-        "tools": ["add_fillet", "add_chamfer", "cut_hole", "mirror"],
+        "description": "倒圆角、倒角、打孔",
+        "tools": ["add_fillet", "add_chamfer", "cut_hole"],
     },
     "transform": {
         "label": "变换与修改",
@@ -184,7 +184,7 @@ def infer_categories_for_task(task_description: str) -> list[str]:
             "cone", "圆锥", "torus", "圆环", "底座", "平台",
         ],
         "boolean": ["合并", "fuse", "union", "cut", "切割", "布尔", "交集", "common"],
-        "features": ["倒角", "fillet", "chamfer", "圆角", "打孔", "hole", "镜像", "mirror"],
+        "features": ["倒角", "fillet", "chamfer", "圆角", "打孔", "hole"],
         "transform": [
             "移动", "move", "旋转", "rotate", "缩放", "scale", "复制", "copy",
             "位置", "placement", "对齐", "align", "相对", "distribute", "排列",

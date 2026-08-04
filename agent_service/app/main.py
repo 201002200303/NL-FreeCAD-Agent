@@ -1,4 +1,5 @@
 """HTTP layer. Workflow logic lives in app.workflow.chat."""
+import asyncio
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -99,7 +100,10 @@ async def chat(request: ChatRequest):
     with trace_api_step(
         sid, "chat", payload, request.debug_mode, create_new=create_new
     ) as (trace, step_name):
-        result = chat_workflow.chat_turn(
+        # LLM 是同步阻塞调用；放进线程池，避免拖死整个 uvicorn 事件循环
+        # （否则等待模型时 /health 与其它请求全部卡住，客户端表现为「没响应」）。
+        result = await asyncio.to_thread(
+            chat_workflow.chat_turn,
             session_id=sid,
             message=request.message,
             document_state=request.document_state,
@@ -146,8 +150,10 @@ async def chat(request: ChatRequest):
 
 @app.post("/agent/compress", response_model=CompressContextResponse)
 async def compress(request: CompressContextRequest):
-    result = chat_workflow.compress_context(
-        request.session_id, keep_recent_turns=request.keep_recent_turns
+    result = await asyncio.to_thread(
+        chat_workflow.compress_context,
+        request.session_id,
+        keep_recent_turns=request.keep_recent_turns,
     )
     return CompressContextResponse(**result)
 

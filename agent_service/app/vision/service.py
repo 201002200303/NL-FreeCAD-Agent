@@ -64,7 +64,12 @@ def assess_viewport(
     try:
         from openai import OpenAI
 
-        client = OpenAI(api_key=config.VISION_API_KEY, base_url=config.VISION_BASE_URL)
+        timeout = float(getattr(config, "LLM_TIMEOUT_SEC", 180) or 180)
+        client = OpenAI(
+            api_key=config.VISION_API_KEY,
+            base_url=config.VISION_BASE_URL,
+            timeout=timeout,
+        )
         response = client.chat.completions.create(
             model=config.VISION_MODEL,
             messages=[

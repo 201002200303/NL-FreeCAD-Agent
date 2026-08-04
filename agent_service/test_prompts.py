@@ -34,9 +34,16 @@ def test_chat_system_uses_md():
     prompt = chat_mod._build_chat_system_prompt(
         plan_mode=True, vision_on=False, user_goal="建一辆车"
     )
-    assert "CAD coding agent" in prompt
+    assert "CAD 建模工程师" in prompt or "coding agent" in prompt
     assert "Plan 模式（已开启）" in prompt
     assert "当前未启用视觉辅助" in prompt
+    assert "建模原则" in prompt
+    assert "place_relative" in prompt
+    assert "right=+X" in prompt or "right` / `left`" in prompt or "右=+X" in prompt
+    assert "阶段完成门闩" in prompt
+    assert 'forward": "-Y"' in prompt or "forward=-Y" in prompt or "前=-Y" in prompt
+    assert "没有 `mirror`" in prompt or "不用 mirror" in prompt
+    assert "linear_pattern" in prompt or "polar_pattern" in prompt
 
 
 def test_brief_still_injects_user_input():
@@ -47,4 +54,4 @@ def test_brief_still_injects_user_input():
         plan_mode=False, vision_on=True, user_goal=brief
     )
     assert brief in prompt
-    assert "mirror" in prompt.lower() or "对称" in prompt
+    assert "对称" in prompt or "linear_pattern" in prompt

@@ -20,10 +20,11 @@ def test_registry_alignment():
 
 
 def test_tool_count():
-    assert len(TOOL_SPECS) == 54, f"Expected 54 tools, got {len(TOOL_SPECS)}"
+    assert len(TOOL_SPECS) == 53, f"Expected 53 tools, got {len(TOOL_SPECS)}"
     all_categorized = sum(len(c["tools"]) for c in TOOL_CATEGORIES.values())
-    assert all_categorized == 54
-    print("  PASS: 54 tools in specs and categories")
+    assert all_categorized == 53
+    print("  PASS: 53 tools in specs and categories")
+    assert "mirror" not in TOOL_SPECS
     for name in ("sketch_add_arc", "sketch_add_polyline", "sketch_add_bspline"):
         assert name in TOOL_SPECS
         assert get_category_for_tool(name) == "sketch"
@@ -45,7 +46,8 @@ def test_category_retrieval():
     multi = get_tools_by_categories(["primitives", "features"])
     assert "create_box" in multi
     assert "add_fillet" in multi
-    assert len(multi) == 9
+    assert "mirror" not in multi
+    assert len(multi) == 8
     print("  PASS: multi-category retrieval")
 
 

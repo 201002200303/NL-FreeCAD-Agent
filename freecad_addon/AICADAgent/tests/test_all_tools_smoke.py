@@ -149,7 +149,7 @@ def run_tests():
         "name": "HoleBox", "length": 30, "width": 30, "height": 15, "pos_y": 320,
     })
     run("cut_hole", {"target": "HoleBox", "hole_diameter": 6, "result_name": "HoleResult"})
-    run("mirror", {"target": "SphA", "name": "SphMirror", "plane": "XY", "origin_z": -20})
+    # mirror 已下线
 
     # ── transform / placement / modify ──
     run("set_placement", {

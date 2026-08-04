@@ -12,6 +12,12 @@ _NAME_REF_FIELDS = frozenset({
 })
 
 
+def _same_tool_payload(cached: dict, tool_name: str, args: dict) -> bool:
+    if (cached.get("tool") or "") != (tool_name or ""):
+        return False
+    return (cached.get("args") or {}) == (args or {})
+
+
 class CadToolExecutor:
     """Executes a modeling plan step-by-step on the active FreeCAD document.
 
@@ -97,26 +103,20 @@ class CadToolExecutor:
         tool_name = tool_call.get("tool", "")
         args = tool_call.get("args", {})
 
-        # Idempotency guard: never re-run a call_id that already succeeded.
-        # Query tools are safe to re-run; only act tools are deduplicated.
+        # Idempotency: skip ONLY when same call_id AND same tool+args already
+        # succeeded (resume/replay). Chat 常每轮重用 T1/T2——若只按 call_id
+        # 跳过，会显示 ✓ 却返回上一阶段的 produced（如天线 create → Pelvis）。
         if self.has_executed(call_id):
             cached = self._completed_results.get(str(call_id))
-            if cached is not None:
+            if cached is not None and _same_tool_payload(cached, tool_name, args):
                 result = dict(cached)
                 result["skipped_duplicate"] = True
+                result["message"] = (
+                    result.get("message")
+                    or "duplicate call_id+payload — already executed, skipped"
+                )
                 return result
-            return {
-                "call_id": call_id,
-                "status": "success",
-                "tool": tool_name,
-                "args": args,
-                "resolved_args": args,
-                "produced_objects": [],
-                "source_objects": [],
-                "name_map_update": {},
-                "message": "duplicate call_id — already executed, skipped",
-                "skipped_duplicate": True,
-            }
+            # 同 id、不同内容：放行真正执行（覆盖缓存）
 
         tool_func = TOOL_REGISTRY.get(tool_name)
         if tool_func is None:

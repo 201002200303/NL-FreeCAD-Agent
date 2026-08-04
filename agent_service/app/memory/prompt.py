@@ -127,34 +127,72 @@ def build_compact_document_context(
     document_state: Optional[DocumentState],
     memory_pack: dict | None = None,
 ) -> str:
-    """Prefer object_memory index; fall back to full document_state."""
+    """Prefer object_memory index; fall back to full document_state.
+
+    Always merge live document_state for visibility / bbox when available —
+    object_memory alone hides「已隐藏」，模型会对视口「缺半边」误判。
+    """
     object_memory = (memory_pack or {}).get("object_memory") or {}
     current_target = (memory_pack or {}).get("current_target")
     query_cache = (memory_pack or {}).get("query_cache") or {}
+
+    live: dict[str, object] = {}
+    if document_state and document_state.objects:
+        live = {obj.name: obj for obj in document_state.objects}
 
     if object_memory:
         lines = ["## 当前文档对象索引（紧凑）\n"]
         if document_state:
             lines.append(f"文档名称: {document_state.document_name}")
+        hidden_names: list[str] = []
         lines.append(f"共 {len(object_memory)} 个已跟踪对象:")
         for name, info in object_memory.items():
             parts = [f"`{name}` type={info.get('type', '?')}"]
+            obj = live.get(name)
+            if obj is not None and not obj.visible:
+                parts.append("已隐藏")
+                hidden_names.append(name)
+            elif info.get("visible") is False:
+                parts.append("已隐藏")
+                hidden_names.append(name)
             if info.get("role"):
                 parts.append(f"role={info['role']}")
             if info.get("status"):
                 parts.append(f"status={info['status']}")
             if info.get("last_known"):
                 parts.append(f"last={info['last_known']}")
-            if info.get("size"):
-                parts.append(f"size={info['size']}")
-            if info.get("center"):
-                parts.append(f"center={info['center']}")
+            # Prefer live bbox over stale memory
+            size = info.get("size")
+            center = info.get("center")
+            if obj is not None and obj.bbox is not None:
+                if obj.bbox.size:
+                    size = list(obj.bbox.size)
+                if obj.bbox.center:
+                    center = list(obj.bbox.center)
+            if size:
+                parts.append(f"size={size}")
+            if center:
+                parts.append(f"center={center}")
             if info.get("last_error"):
                 parts.append(f"err={info['last_error']}")
             lines.append("- " + ", ".join(parts))
 
+        if hidden_names:
+            lines.append(
+                f"\n⚠ 当前隐藏 {len(hidden_names)} 个（视口看不见，但文档仍在）: "
+                + ", ".join(f"`{n}`" for n in hidden_names[:30])
+                + (" …" if len(hidden_names) > 30 else "")
+            )
+            lines.append(
+                "若用户说「不对称/缺一侧」，先检查是否一侧被布尔/倒角隐藏；"
+                "优先恢复可见或对侧重新 create_*（不要用已下线的 mirror）。"
+            )
+
         if current_target and current_target in query_cache:
-            lines.append(f"\n当前 target `{current_target}` 已有查询: {query_cache[current_target].get('summary', '')}")
+            lines.append(
+                f"\n当前 target `{current_target}` 已有查询: "
+                f"{query_cache[current_target].get('summary', '')}"
+            )
 
         if document_state and document_state.objects:
             untracked = [

@@ -1,5 +1,58 @@
 # Development Log
 
+## 2026-08-04: 旧架构清理可行性评估 + 检查点提交
+
+**评估**: `docs/legacy_cleanup_feasibility.md` — 客户端旧闭环可优先删；archive 可选；runtime/memory 勿整包删。
+**本提交**: chat 提示词/timeout/cut_hole/mirror 下线等改动检查点，清理前先上 GitHub。
+
+## 2026-08-04: 下线 mirror，对称改对侧 create；保留阵列
+
+**因**: mirror 仍易藏源/不可见/Placement 双重偏移；用户要求取消。
+**改**: 从 tool_specs/registry/FreeCAD TOOL_REGISTRY 移除；prompt 要求关于 X=0 对侧 create_*；`linear_pattern`/`polar_pattern`/`copy_object` 保留；mirror 函数改为显式报错。
+
+## 2026-08-04: 紧凑文档上下文补「已隐藏」
+
+**因**: session_1aee9ae6 右侧已 mirror 且坐标对称，但旧 mirror 藏源；紧凑索引无 visible → 用户说「没对称」时模型以为视口刷新问题，对 L 侧 set_placement 双重偏移发癫。
+**改**: `build_compact_document_context` 合并 live document_state 的可见性/bbox，汇总隐藏列表；prompt 禁止对镜像 Feature 乱 set_placement。
+
+## 2026-08-04: chat 坐标系/镜像提示词纠偏（高达 session_7cba71d7）
+
+**因**: 模型自定「前=+X」与 `place_relative`（right=+X/front=-Y）冲突；mirror 写 name_map 并藏源 → 半边肢体被劫持。
+**提示**: `chat_system`/`chat_plan_on` 锁定 frame=前-Y/左右±X；完成门闩；清理 Temp/001；tool_specs 写明锚点与 mirror 双侧保留。
+**代码**: `mirror` 不再返回 `source`、不隐藏源（防 name_map 改写）。
+
+## 2026-08-04: 缓解 chat timeout
+
+**原因**: 完整 system(~18k)+工具表时 qwen 单轮~30s；`max_tokens=40960`+推理+视觉+重试易超客户端 300s。
+**改**: `LLM_MAX_TOKENS=8192`、`LLM_TIMEOUT_SEC=180`、重试默认 2；尝试 `enable_thinking=False`；HTTP 超时 600s；`.env` 关 VISION、对话预算改 120k。
+
+## 2026-08-04: cut_hole 改为 Part::Cut / Pocket
+
+**旧**: 内存 `shape.cut` + 新 Feature 并隐藏原件，像「删掉」。
+**新**: 默认 `Part::Cylinder` 刀 + `Part::Cut` 布尔求差；可选 `body`→草图圆+Pocket；校验 Solids/体积，失败回滚不藏基体；增 `axis`。
+**提示**: chat_system 要求打孔用 cut_hole 且后续只用新对象名。
+
+## 2026-08-04: 修 chat 阻塞事件循环（客户端像没响应）
+
+**原因**: `async /agent/chat` 内同步 `call_llm` 堵死 uvicorn；一次调用约 40s，期间 health/其它请求全挂。
+**证据**: `session_7203fb68` 服务端已落库完整回复，但等待期间连接堆积。
+**修**: `asyncio.to_thread(chat_turn)`；客户端发送即显示「正在请求模型…」。
+
+## 2026-08-04: 切换 LLM/Vision 至阿里云 qwen3.8-max-preview
+
+**.env**: `OPENAI_BASE_URL=token-plan…/compatible-mode/v1`，`LLM_MODEL`/`VISION_MODEL=qwen3.8-max-preview`，`VISION_ENABLED=1`。密钥仅本地 `.env`。
+
+## 2026-08-04: 修 call_id 幂等误跳过（✓ 却产出旧名）
+
+**现象**: 阶段2 create 天线显示 `✓ → Pelvis`，实际未执行；get_object_detail 找不到新对象。
+**原因**: executor 仅按 call_id 去重，模型每轮重用 T1/T2，返回阶段1缓存结果且 status=success。
+**修**: 同 id 且 tool+args 相同才跳过；UI 对 skipped 显示 ↷ 非 ✓；prompt 强调 call_id 全会话唯一。
+
+## 2026-08-04: chat 建模原则提示词（工程师模式）
+
+**改**: `chat_system.md` 纳入规划/基准/先大后小/mirror/可追溯尺寸等原则；`chat_plan_on` 明确 soft_plan 四块（分解/顺序/frame/key_dims）；`design_brief` 对齐冲突优先级。
+**适配**: 输出仍为 chat JSON（message + tool_calls + soft_plan），非旧 step_id/operation 格式。
+
 ## 2026-08-04: 归档旧闭环链路
 
 **提交前快照**: `101b2d2`（chat-first + prompts 集中）。
