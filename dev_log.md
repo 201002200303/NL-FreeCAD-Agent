@@ -1,5 +1,12 @@
 # Development Log
 
+## 2026-08-04: 归档旧闭环链路
+
+**提交前快照**: `101b2d2`（chat-first + prompts 集中）。
+**归档至** `agent_service/archive/legacy_closed_loop/`：旧 API（plan/start/next/evaluate/spec…）、提示词、abstract_steps/cad_spec/evaluation/recipes/modeling_knowledge、专测。
+**Live**: 仅 `/agent/chat` + compress + capabilities + session；`app/prompts/` 只留 chat_*；`workflow/sanitize.py` 抽出。
+**pytest**: `norecursedirs=archive`。
+
 ## 2026-08-04: 提示词集中到 app/prompts/
 
 **目录**: `agent_service/app/prompts/*.md` + `README.md` 索引；`[[PLACEHOLDER]]` 注入；文件头 `<!-- 用途/调用方 -->` 注释不进模型。

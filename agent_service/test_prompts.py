@@ -1,7 +1,6 @@
-"""提示词集中目录加载与关键片段冒烟。"""
+"""提示词集中目录加载与关键片段冒烟（仅 live chat 路径）。"""
 
 from app.design import format_design_brief
-from app.llm import llm_provider
 from app.prompts import clear_cache, load_template, render
 from app.workflow import chat as chat_mod
 
@@ -17,11 +16,6 @@ def test_all_named_templates_load():
         "compress",
         "vision",
         "design_brief",
-        "high_level_plan",
-        "next_step",
-        "evaluate",
-        "legacy_plan",
-        "cad_spec",
     ]
     for name in names:
         text = load_template(name)
@@ -45,27 +39,12 @@ def test_chat_system_uses_md():
     assert "当前未启用视觉辅助" in prompt
 
 
-def test_brief_and_next_step_still_inject_user_input():
+def test_brief_still_injects_user_input():
     brief = "总长 4500mm，左右对称"
     text = format_design_brief(brief, goal="车")
     assert brief in text
-    prompt = llm_provider._build_next_step_prompt(
-        high_level_plan={
-            "goal": "车",
-            "user_input": brief,
-            "phases": [
-                {
-                    "phase_id": "P1",
-                    "title": "车身",
-                    "intent": "主体",
-                    "success_criteria": ["存在车身"],
-                }
-            ],
-        },
-        current_phase_id="P1",
-        execution_history={},
-        name_map={},
-        user_input=brief,
+    prompt = chat_mod._build_chat_system_prompt(
+        plan_mode=False, vision_on=True, user_goal=brief
     )
     assert brief in prompt
-    assert "对称件必须用" in prompt
+    assert "mirror" in prompt.lower() or "对称" in prompt

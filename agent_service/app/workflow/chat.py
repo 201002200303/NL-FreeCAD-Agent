@@ -22,7 +22,7 @@ from app.prompts import render
 from app.tools.tool_registry import resolve_tool_specs_for_prompt, build_tools_description
 from app.vision import assess_viewport, vision_available
 from app.vision.service import format_vision_for_prompt
-from app.workflow.service import sanitize_tool_calls
+from app.workflow.sanitize import sanitize_tool_calls
 
 
 def chat_turn(

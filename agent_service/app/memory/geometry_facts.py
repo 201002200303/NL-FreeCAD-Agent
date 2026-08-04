@@ -120,6 +120,52 @@ def has_spatial_facts(query_result: dict | None = None, cache_entry: dict | None
     return bool(facts.get("size") and facts.get("center"))
 
 
+_QUERY_TOOLS = {
+    "summarize_document",
+    "get_object_detail",
+    "measure_gap",
+    "compare_orientation",
+    "list_topology",
+}
+
+
+def query_cache_covers_target(session_memory: dict, target: str) -> bool:
+    """缓存命中且含可用空间事实时才算覆盖。"""
+    target = (target or "").strip()
+    if not target or not session_memory:
+        return False
+    query_cache = session_memory.get("query_cache") or {}
+    entry = query_cache.get(target)
+    if entry and has_spatial_facts(cache_entry=entry):
+        return True
+    full_cache = session_memory.get("_query_cache_full") or {}
+    entry = full_cache.get(target)
+    return bool(entry and has_spatial_facts(cache_entry=entry))
+
+
+def recent_query_covers_target(execution_history: dict, target: str) -> bool:
+    """最近执行历史里是否已有针对 target 且含空间事实的 query。"""
+    target = (target or "").strip()
+    for entry in (execution_history or {}).get("recent", [])[-8:]:
+        tool = entry.get("tool", "")
+        if entry.get("kind") != "query" and tool not in _QUERY_TOOLS:
+            continue
+        query_result = entry.get("query_result") or {}
+        matched = False
+        if entry.get("query_target") == target:
+            matched = True
+        if target in (entry.get("query_targets") or []):
+            matched = True
+        if query_result.get("name") == target:
+            matched = True
+        objects = query_result.get("objects") or []
+        if any(obj.get("name") == target for obj in objects if isinstance(obj, dict)):
+            matched = True
+        if matched and has_spatial_facts(query_result=query_result):
+            return True
+    return False
+
+
 def summarize_query_result(query_result: dict | None) -> str:
     if not query_result:
         return ""

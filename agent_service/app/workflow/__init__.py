@@ -1,29 +1,13 @@
-"""Workflow spine.
+"""Workflow spine：对话主路径 chat_turn / compress_context。
 
-- 对话主路径：`chat.chat_turn` / `chat.compress_context`（Cursor 式）
-- 兼容旧三段式：`service.start_plan` / `next_step` / `evaluate_step`
+旧三段式（start_plan / next_step / evaluate_step）与 legacy plan 已归档至
+`agent_service/archive/legacy_closed_loop/`。
 """
-from app.workflow.service import (
-    start_plan,
-    next_step,
-    evaluate_step,
-    legacy_plan,
-    plan_next_step_node,
-    validate_next_step_node,
-    evaluate_step_node,
-    should_end,
-)
 from app.workflow.chat import chat_turn, compress_context
+from app.workflow.sanitize import sanitize_tool_calls
 
 __all__ = [
     "chat_turn",
     "compress_context",
-    "start_plan",
-    "next_step",
-    "evaluate_step",
-    "legacy_plan",
-    "plan_next_step_node",
-    "validate_next_step_node",
-    "evaluate_step_node",
-    "should_end",
+    "sanitize_tool_calls",
 ]

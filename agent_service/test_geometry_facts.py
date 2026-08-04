@@ -4,9 +4,10 @@ from app.memory.geometry_facts import (
     extract_spatial_facts,
     has_spatial_facts,
     normalize_bbox,
+    query_cache_covers_target,
+    recent_query_covers_target,
     summarize_query_result,
 )
-from app.tools.query_policy import query_cache_covers_target, recent_query_covers_target
 
 
 def test_normalize_topology_bbox():

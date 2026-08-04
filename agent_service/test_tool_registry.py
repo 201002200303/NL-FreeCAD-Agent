@@ -7,10 +7,10 @@ from app.tools.tool_registry import (
     get_category_summary,
     get_tools_by_categories,
     infer_categories_for_task,
+    resolve_tool_specs_for_prompt,
     validate_registry_alignment,
 )
-from app.workflow.service import _validate_plan
-from app.llm.llm_provider import build_system_prompt
+from app.llm.llm_provider import _build_tools_description
 
 
 def test_registry_alignment():
@@ -65,8 +65,10 @@ def test_category_inference():
 
 
 def test_prompt_subset_size():
-    full = build_system_prompt()
-    subset = build_system_prompt(tool_categories=["primitives"])
+    full = _build_tools_description()
+    subset = _build_tools_description(
+        resolve_tool_specs_for_prompt(["primitives"], allow_subset=True)
+    )
     assert len(subset) < len(full)
     assert "create_sphere" in subset
     assert "boolean_fuse" not in subset
@@ -78,36 +80,6 @@ def test_category_summary():
     assert "primitives" in summary
     assert "create_box" in summary
     print("  PASS: category summary for decomposer")
-
-
-def test_validate_new_tools():
-    plan = {
-        "status": "ok",
-        "goal": "test lamp",
-        "plan": [
-            {
-                "step_id": "step_1",
-                "tool": "create_sphere",
-                "args": {"name": "Bulb", "radius": 15},
-                "depends_on": [],
-            },
-            {
-                "step_id": "step_2",
-                "tool": "boolean_fuse",
-                "args": {"name": "LampBody", "base": "Base", "tool": "Pole"},
-                "depends_on": ["step_1"],
-            },
-            {
-                "step_id": "step_3",
-                "tool": "add_fillet",
-                "args": {"target": "LampBody", "radius": 2},
-                "depends_on": ["step_2"],
-            },
-        ],
-    }
-    errors = _validate_plan(plan)
-    assert errors == [], f"Validation errors: {errors}"
-    print("  PASS: validate plan with new tools")
 
 
 def test_reverse_lookup():
@@ -127,7 +99,6 @@ if __name__ == "__main__":
     test_category_inference()
     test_prompt_subset_size()
     test_category_summary()
-    test_validate_new_tools()
     test_reverse_lookup()
     print()
     print(f"All tools: {list_tool_names()}")
