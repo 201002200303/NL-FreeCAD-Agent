@@ -18,7 +18,7 @@ from AICADAgent.document_state import get_document_state
 from AICADAgent.executor import CadToolExecutor
 from AICADAgent.debug_settings import is_debug_mode
 from AICADAgent.session_memory import SessionMemory
-from AICADAgent.viewport import capture_viewport
+from AICADAgent.viewport import capture_viewport, capture_views
 
 AGENT_BASE_URL = "http://127.0.0.1:8765"
 # 含工具列表的 chat 单轮常 30–90s；视觉+多轮回灌更容易超时，给足余量
@@ -422,10 +422,34 @@ class AgentRunner(QtCore.QObject):
             return
 
         viewport = None
+        viewport_images = []
         if self.chat and self.chat.vision_enabled:
-            viewport = capture_viewport(1024)
-            if viewport:
-                self.log_message.emit("→ 已截取视口供视觉检查")
+            # execute_cad_program 成功后截多视图；否则退回单张当前视口
+            want_multi = False
+            for item in tool_results or []:
+                if not isinstance(item, dict):
+                    continue
+                call = item.get("tool_call") or {}
+                er = item.get("execution_result") or {}
+                if (
+                    call.get("tool") == "execute_cad_program"
+                    and (er.get("status") or "").lower() == "success"
+                ):
+                    want_multi = True
+                    break
+            try:
+                if want_multi:
+                    viewport_images = capture_views(["front", "side", "top", "iso"], max_edge=1024)
+                    if viewport_images:
+                        self.log_message.emit(
+                            f"→ 已截取多视图供视觉检查: {', '.join(v.get('name','') for v in viewport_images)}"
+                        )
+                if not viewport_images:
+                    viewport = capture_viewport(1024)
+                    if viewport:
+                        self.log_message.emit("→ 已截取视口供视觉检查")
+            except Exception as exc:
+                self.log_message.emit(f"↷ 视口截图失败，跳过视觉: {exc}")
 
         memory = None
         if self.chat:
@@ -441,6 +465,7 @@ class AgentRunner(QtCore.QObject):
             "document_state": doc_state,
             "tool_results": tool_results or [],
             "viewport_image": viewport,
+            "viewport_images": viewport_images,
             "plan_mode": self.chat.plan_mode if self.chat else True,
             "vision_enabled": self.chat.vision_enabled if self.chat else False,
             "session_memory": memory,
@@ -573,6 +598,20 @@ class AgentRunner(QtCore.QObject):
         call = self._tool_queue.pop(0)
         tool = call.get("tool") or "?"
         desc = call.get("description") or ""
+
+        if call.get("blocked"):
+            exec_result = {
+                "status": "error",
+                "message": call.get("preflight_error") or "服务端预校验拒绝执行",
+                "call_id": call.get("call_id"),
+                "tool": tool,
+                "error_type": "preflight_blocked",
+            }
+            self._emit_chat("thinking", f"✗ {tool}: {exec_result['message']}", label="tool")
+            self._tool_results.append({"tool_call": call, "execution_result": exec_result})
+            QtCore.QTimer.singleShot(0, self._run_next_chat_tool)
+            return
+
         self.log_message.emit(f"⚙ {tool} {desc}")
         self._emit_chat("thinking", f"→ {tool} {desc}".strip(), label="tool")
         try:

@@ -531,14 +531,21 @@ TOOL_SPECS: dict = {
     },
     # ── partdesign (特征链) ──
     "pad_sketch": {
-        "description": "拉伸草图 (PartDesign::Pad)",
+        "description": "拉伸草图 (PartDesign::Pad)。midplane=true 时 length 为总厚度（对称拉伸）",
         "parameters": {
             "name": {"type": "string", "description": "Pad 名称"},
             "sketch": {"type": "string", "description": "草图对象名"},
-            "length": {"type": "float", "description": "拉伸长度 (mm)"},
+            "length": {
+                "type": "float",
+                "description": "拉伸长度 (mm)；midplane=true 时为总厚度",
+            },
             "body": {"type": "string", "description": "Body 名称（可选）"},
             "reversed": {"type": "bool", "default": False},
-            "midplane": {"type": "bool", "default": False},
+            "midplane": {
+                "type": "bool",
+                "default": False,
+                "description": "true=关于草图面对称；此时 length 为总厚度",
+            },
             "type": {"type": "string", "default": "Length", "description": "Length|TwoLengths|UpToLast|UpToFirst"},
         },
         "required": ["name", "sketch", "length"],

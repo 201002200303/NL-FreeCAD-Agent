@@ -2,11 +2,19 @@
 
 from app.tools.tool_specs import TOOL_SPECS, get_tool_spec, list_tool_names
 
+# 每轮 system prompt 始终注入完整 schema 的查询工具
+CORE_TOOL_NAMES: tuple[str, ...] = (
+    "summarize_document",
+    "get_object_detail",
+    "measure_gap",
+)
+
 ALL_TOOL_CATEGORIES: list[str] = [
     "primitives",
     "boolean",
     "features",
     "transform",
+    "pattern",
     "export",
     "query",
     "sketch",
@@ -25,24 +33,30 @@ TOOL_CATEGORIES: dict[str, dict] = {
         ],
     },
     "boolean": {
-        "label": "布尔运算",
-        "description": "合并、切割、取交集",
-        "tools": ["boolean_fuse", "boolean_cut", "boolean_common"],
+        "label": "布尔与打孔",
+        "description": "合并、切割、取交集、打孔",
+        "tools": [
+            "boolean_fuse", "boolean_cut", "boolean_common", "cut_hole",
+        ],
     },
     "features": {
-        "label": "特征操作",
-        "description": "倒圆角、倒角、打孔",
-        "tools": ["add_fillet", "add_chamfer", "cut_hole"],
+        "label": "精修特征",
+        "description": "倒圆角、倒角",
+        "tools": ["add_fillet", "add_chamfer"],
     },
     "transform": {
         "label": "变换与修改",
-        "description": "位置、移动、旋转、缩放、复制、圆周/线性阵列、参数修改、删除",
+        "description": "位置、移动、旋转、缩放、复制、对齐、参数修改、删除",
         "tools": [
             "set_placement", "move", "rotate", "scale", "copy_object",
-            "polar_pattern", "linear_pattern",
-            "align_objects", "place_relative", "distribute_along",
+            "align_objects", "place_relative",
             "modify_param", "delete_object",
         ],
+    },
+    "pattern": {
+        "label": "阵列",
+        "description": "圆周阵列、线性阵列、等距分布",
+        "tools": ["polar_pattern", "linear_pattern", "distribute_along"],
     },
     "export": {
         "label": "导出",
@@ -99,18 +113,25 @@ def get_all_tool_specs() -> dict:
 
 
 def resolve_tool_specs_for_prompt(
-    allowed_categories: list[str] | None = None,
+    categories: list[str] | tuple[str, ...] | None = None,
     *,
-    allow_subset: bool = False,
+    include_core: bool = True,
 ) -> dict:
-    """Resolve which tool specs to inject into LLM prompts.
+    """按类别解析要注入 prompt 的工具 schema。
 
-    Default policy: always expose the full registry. Category subsets are opt-in
-    only (tests / explicit harness experiments).
+    categories 为 None → 全量（兼容旧调用/调试）。
+    给定 categories → 仅这些类别 + 可选 CORE 工具。
     """
-    if allow_subset and allowed_categories:
-        return get_tools_by_categories(allowed_categories)
-    return get_all_tool_specs()
+    if not categories:
+        return get_all_tool_specs()
+
+    result = get_tools_by_categories(list(categories))
+    if include_core:
+        for name in CORE_TOOL_NAMES:
+            spec = get_tool_spec(name)
+            if spec:
+                result[name] = spec
+    return result
 
 
 def get_category_for_tool(tool_name: str) -> str | None:
@@ -131,21 +152,20 @@ def get_tools_by_categories(categories: list[str]) -> dict:
 
 
 def get_category_summary(categories: list[str] | None = None) -> str:
-    lines = ["## 可用工具类别\n"]
+    """类别索引（名称 + 一句话 + 工具名列表）。categories=None 表示全部。"""
+    lines = ["## 工具类别索引（完整 schema 仅见下方工作集）\n"]
     items = TOOL_CATEGORIES.items()
-    if categories:
+    if categories is not None:
         allowed = set(categories)
         items = [(cat_id, info) for cat_id, info in items if cat_id in allowed]
     for cat_id, info in items:
-        tool_list = ", ".join(f"`{t}`" for t in info["tools"])
         lines.append(f"- **{cat_id}** ({info['label']}): {info['description']}")
-        lines.append(f"  工具: {tool_list}\n")
     return "\n".join(lines)
 
 
 def build_tools_description(tool_specs: dict | None = None) -> str:
     specs = tool_specs if tool_specs is not None else TOOL_SPECS
-    lines = ["## 可用的建模工具\n"]
+    lines = ["## 当前工具工作集（完整参数）\n"]
     for tool_name, tool_spec in specs.items():
         lines.append(f"### {tool_name}")
         lines.append(f"**描述**: {tool_spec['description']}")
@@ -175,37 +195,7 @@ def validate_registry_alignment() -> list[str]:
 
 
 def infer_categories_for_task(task_description: str) -> list[str]:
-    text = task_description.lower()
-    categories: list[str] = []
+    """兼容旧测试：转发到 routing.route 的 tool_categories。"""
+    from app.tools.routing import route
 
-    keyword_map = {
-        "primitives": [
-            "box", "cube", "长方体", "cylinder", "圆柱", "sphere", "球",
-            "cone", "圆锥", "torus", "圆环", "底座", "平台",
-        ],
-        "boolean": ["合并", "fuse", "union", "cut", "切割", "布尔", "交集", "common"],
-        "features": ["倒角", "fillet", "chamfer", "圆角", "打孔", "hole"],
-        "transform": [
-            "移动", "move", "旋转", "rotate", "缩放", "scale", "复制", "copy",
-            "位置", "placement", "对齐", "align", "相对", "distribute", "排列",
-            "阵列", "pattern", "polar", "圆周", "linear_pattern",
-        ],
-        "export": ["导出", "export", "step", "stl", "保存", "save"],
-        "query": [
-            "查询", "拓扑", "list_topology", "get_object_detail", "measure_gap",
-            "compare_orientation", "边", "面", "edge", "face", "编号", "间隙", "gap",
-        ],
-        "sketch": [
-            "草图", "sketch", "画", "矩形", "圆", "圆弧", "arc", "折线", "polyline",
-            "样条", "bspline", "spline", "constraint", "约束",
-        ],
-        "partdesign": ["拉伸", "pad", "pocket", "切除", "特征", "partdesign", "body"],
-        "surface": ["放样", "loft", "扫掠", "sweep", "pipe", "旋转体", "revolve"],
-        "assembly": ["装配", "assembly", "配合", "mate", "同轴", "对齐"],
-    }
-
-    for cat, keywords in keyword_map.items():
-        if any(kw in text for kw in keywords):
-            categories.append(cat)
-
-    return categories or list(ALL_TOOL_CATEGORIES)
+    return list(route(message=task_description).tool_categories)

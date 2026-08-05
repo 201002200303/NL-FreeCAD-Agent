@@ -12,6 +12,12 @@ class ToolCall(BaseModel):
     expected_effect: Optional[dict] = Field(
         None, description="Expected result (new_object, type, bbox_approx, etc.)"
     )
+    blocked: Optional[bool] = Field(
+        default=None, description="服务端预校验拒绝；客户端勿执行"
+    )
+    preflight_error: Optional[str] = Field(
+        default=None, description="预校验失败原因（须回灌给模型）"
+    )
 
 
 class ExecutionResult(BaseModel):

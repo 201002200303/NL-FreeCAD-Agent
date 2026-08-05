@@ -25,6 +25,7 @@ class LogExecutionRequest(BaseModel):
 class ViewportImage(BaseModel):
     image_b64: str = Field(..., description="Base64-encoded viewport screenshot")
     mime: str = Field(default="image/png")
+    name: str = Field(default="viewport", description="视图名：front/side/top/iso")
 
 
 class ChatRequest(BaseModel):
@@ -38,7 +39,11 @@ class ChatRequest(BaseModel):
         description="客户端执行完 tool_calls 后回传 [{tool_call, execution_result}]",
     )
     viewport_image: Optional[ViewportImage] = Field(
-        default=None, description="可选视口截图，供视觉检查"
+        default=None, description="可选单张视口截图（兼容旧客户端）"
+    )
+    viewport_images: list[ViewportImage] = Field(
+        default_factory=list,
+        description="可选多视图截图 front/side/top/iso，优先于 viewport_image",
     )
     plan_mode: Optional[bool] = Field(default=None, description="是否维护 soft_plan")
     vision_enabled: Optional[bool] = Field(

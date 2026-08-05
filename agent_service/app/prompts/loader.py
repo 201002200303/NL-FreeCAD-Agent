@@ -19,13 +19,27 @@ _PLACEHOLDER_RE = re.compile(r"\[\[([A-Z0-9_]+)\]\]")
 
 @lru_cache(maxsize=64)
 def load_template(name: str) -> str:
-    """读取 name.md（不含扩展名），剥掉 HTML 注释。"""
+    """读取 name.md（不含扩展名），剥掉 HTML 注释。
+
+    支持子路径，如 ``packs/gear`` → ``prompts/packs/gear.md``。
+    """
     path = _PROMPTS_DIR / f"{name}.md"
     if not path.is_file():
         raise FileNotFoundError(f"prompt template not found: {path}")
     text = path.read_text(encoding="utf-8")
     text = _COMMENT_RE.sub("", text)
     return text.strip()
+
+
+def render_rule_packs(pack_names: tuple[str, ...] | list[str]) -> str:
+    """按序拼接 prompts/packs/<name>.md；缺失的 pack 跳过。"""
+    chunks: list[str] = []
+    for name in pack_names:
+        try:
+            chunks.append(render(f"packs/{name}").rstrip())
+        except FileNotFoundError:
+            continue
+    return "\n\n".join(chunks)
 
 
 def render(name: str, **kwargs: object) -> str:

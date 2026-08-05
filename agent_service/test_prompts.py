@@ -8,7 +8,7 @@ from app.workflow import chat as chat_mod
 def test_all_named_templates_load():
     clear_cache()
     names = [
-        "chat_system",
+        "chat_core",
         "chat_plan_on",
         "chat_plan_off",
         "chat_vision_on",
@@ -16,6 +16,9 @@ def test_all_named_templates_load():
         "compress",
         "vision",
         "design_brief",
+        "packs/general_part",
+        "packs/gear",
+        "packs/humanoid",
     ]
     for name in names:
         text = load_template(name)
@@ -30,28 +33,32 @@ def test_render_replaces_placeholders():
     assert "原始需求" in out
 
 
-def test_chat_system_uses_md():
-    prompt = chat_mod._build_chat_system_prompt(
-        plan_mode=True, vision_on=False, user_goal="建一辆车"
+def test_chat_core_code_mode():
+    prompt = chat_mod.build_chat_system_prompt(
+        message="建一辆车",
+        user_goal="建一辆车",
+        plan_mode=True,
+        vision_on=False,
     )
-    assert "CAD 建模工程师" in prompt or "coding agent" in prompt
+    assert "Code Mode" in prompt or "参数化建模" in prompt
+    assert "execute_cad_program" in prompt
     assert "Plan 模式（已开启）" in prompt
     assert "当前未启用视觉辅助" in prompt
-    assert "建模原则" in prompt
-    assert "place_relative" in prompt
-    assert "right=+X" in prompt or "right` / `left`" in prompt or "右=+X" in prompt
-    assert "阶段完成门闩" in prompt
-    assert 'forward": "-Y"' in prompt or "forward=-Y" in prompt or "前=-Y" in prompt
-    assert "没有 `mirror`" in prompt or "不用 mirror" in prompt
-    assert "linear_pattern" in prompt or "polar_pattern" in prompt
+    assert "右" in prompt and "+X" in prompt
+    assert "前" in prompt and "-Y" in prompt
+    # 不再注入旧工作集 / 规则包
+    assert "### create_box" not in prompt
+    assert "当前工具工作集" not in prompt
 
 
 def test_brief_still_injects_user_input():
     brief = "总长 4500mm，左右对称"
     text = format_design_brief(brief, goal="车")
     assert brief in text
-    prompt = chat_mod._build_chat_system_prompt(
-        plan_mode=False, vision_on=True, user_goal=brief
+    prompt = chat_mod.build_chat_system_prompt(
+        message=brief,
+        user_goal=brief,
+        plan_mode=False,
+        vision_on=True,
     )
     assert brief in prompt
-    assert "对称" in prompt or "linear_pattern" in prompt

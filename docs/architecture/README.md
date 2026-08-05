@@ -40,7 +40,7 @@
 
 [详细文档](./v06-architecture.md)
 
-### V0.7 - Closed-Loop Agent（当前）
+### V0.7 - Closed-Loop Agent（已归档主路径）
 - **Observe-Plan-Act-Evaluate** 闭环
 - LangGraph 扩展为 **3 个新 graph** + 保留旧 graph
 - 三个新 API：start_plan / next_step / evaluate_step
@@ -48,6 +48,14 @@
 - panel 切换 agent_runner（QThread + 主线程执行）
 
 [详细文档](./v07-architecture.md)
+
+### V0.10 - Code Mode（当前主路径）
+- 主入口仍为 `POST /agent/chat`，但建模动作为 `execute_cad_program`
+- 受限 Python（`cad.*`）+ AST 沙箱 + 客户端单事务
+- 53 工具退到执行器内部；圆周均布走 `polar_pattern`
+- 可选多视图 VLM；**尚无** bbox/贴合几何门禁
+
+[详细文档](../code_mode.md)
 
 ---
 
@@ -60,7 +68,8 @@ graph LR
     V04 --> V05[V0.5 LangGraph 单次Plan]
     V05 --> V06[V0.6 37 tools]
     V06 --> V07[V0.7 闭环 OPAE]
-    V07 --> V08[V0.8 分层Plan+回退 规划中]
+    V07 --> V08[V0.8 chat-first]
+    V08 --> V10[V0.10 Code Mode]
 ```
 
 ## V0.5 → V0.7 关键变化速查

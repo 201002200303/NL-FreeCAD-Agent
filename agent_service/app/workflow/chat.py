@@ -19,10 +19,40 @@ from app.design import format_design_brief
 from app.llm.llm_provider import call_llm
 from app.memory.prompt import build_compact_document_context, resolve_memory_pack
 from app.prompts import render
-from app.tools.tool_registry import resolve_tool_specs_for_prompt, build_tools_description
-from app.vision import assess_viewport, vision_available
-from app.vision.service import format_vision_for_prompt
+from app.vision import assess_views, vision_available
+from app.vision.service import format_vision_for_prompt, needs_code_revision
 from app.workflow.sanitize import sanitize_tool_calls
+
+
+def classify_chat_step(
+    *,
+    message: str = "",
+    tool_results: Optional[list[dict]] = None,
+    vision_hard_issue: bool = False,
+) -> str:
+    """Trace 步骤标签：同一用户请求内区分 code_gen / repair / vision_revise / feedback。"""
+    if tool_results:
+        failed = False
+        succeeded_cad = False
+        for item in tool_results:
+            if not isinstance(item, dict):
+                continue
+            call = item.get("tool_call") or {}
+            er = item.get("execution_result") or {}
+            status = (er.get("status") or "").lower()
+            tool = call.get("tool") or ""
+            if status == "error":
+                failed = True
+            if tool == "execute_cad_program" and status == "success":
+                succeeded_cad = True
+        if failed:
+            return "code_repair"
+        if succeeded_cad and vision_hard_issue:
+            return "vision_revise"
+        return "tool_feedback"
+    if (message or "").strip():
+        return "code_gen"
+    return "chat"
 
 
 def chat_turn(
@@ -32,6 +62,7 @@ def chat_turn(
     document_state=None,
     tool_results: Optional[list[dict]] = None,
     viewport_image: Optional[dict] = None,
+    viewport_images: Optional[list[dict]] = None,
     plan_mode: Optional[bool] = None,
     vision_enabled: Optional[bool] = None,
     session_memory: Optional[dict] = None,
@@ -45,14 +76,29 @@ def chat_turn(
     use_vision = vision_available(request_enabled=vision_enabled)
 
     vision_result = None
-    if use_vision and viewport_image and viewport_image.get("image_b64"):
-        vision_result = assess_viewport(
-            image_b64=viewport_image["image_b64"],
-            mime=viewport_image.get("mime") or "image/png",
-            user_goal=user_goal or message,
-            phase_hint=_soft_plan_hint(soft_plan),
-            focus=message[:200] if message else "",
-        )
+    if use_vision:
+        views = list(viewport_images or [])
+        if not views and viewport_image and viewport_image.get("image_b64"):
+            views = [
+                {
+                    "name": viewport_image.get("name") or "viewport",
+                    "image_b64": viewport_image["image_b64"],
+                    "mime": viewport_image.get("mime") or "image/png",
+                }
+            ]
+        if views:
+            vision_result = assess_views(
+                views=views,
+                user_goal=user_goal or message,
+                phase_hint=_soft_plan_hint(soft_plan),
+                focus=message[:200] if message else "",
+            )
+
+    step_kind = classify_chat_step(
+        message=message,
+        tool_results=tool_results,
+        vision_hard_issue=needs_code_revision(vision_result),
+    )
 
     with conversation_scope(sid) as transcript:
         if transcript is None:
@@ -69,10 +115,12 @@ def chat_turn(
             vision_result=vision_result,
             user_goal=user_goal,
         )
-        system = _build_chat_system_prompt(
+        system = build_chat_system_prompt(
+            message=message,
+            user_goal=user_goal or message,
             plan_mode=plan_mode,
             vision_on=use_vision,
-            user_goal=user_goal or message,
+            soft_plan=soft_plan,
         )
 
         note = _transcript_note(message, tool_results, vision_result)
@@ -88,10 +136,12 @@ def chat_turn(
                 "vision": vision_result,
                 "plan_mode": plan_mode,
                 "vision_enabled": use_vision,
+                "step_kind": step_kind,
                 "context_chars": transcript.total_chars,
             }
 
         parsed = _normalize_chat_result(result, soft_plan=soft_plan, plan_mode=plan_mode)
+        parsed["tool_calls"] = prefilter_tool_calls(parsed.get("tool_calls") or [])
         assistant_text = json.dumps(
             {
                 "message": parsed["message"],
@@ -109,11 +159,48 @@ def chat_turn(
                 "vision": vision_result,
                 "plan_mode": plan_mode,
                 "vision_enabled": use_vision,
+                "step_kind": step_kind,
                 "context_chars": transcript.total_chars,
                 "turn_count": transcript.turn_count,
             }
         )
         return parsed
+
+
+def prefilter_tool_calls(tool_calls: list[dict]) -> list[dict]:
+    """服务端预校验 execute_cad_program：危险 code 标 blocked，保留原文与错误细节。"""
+    from app.cad_program.validate import validate_cad_source
+
+    out: list[dict] = []
+    for call in tool_calls or []:
+        if not isinstance(call, dict) or call.get("tool") != "execute_cad_program":
+            out.append(call)
+            continue
+        args = dict(call.get("args") or {})
+        code = args.get("code") or ""
+        if isinstance(code, list):
+            code = "\n".join(str(x) for x in code)
+            args["code"] = code
+        verdict = validate_cad_source(code if isinstance(code, str) else "")
+        if verdict.ok:
+            out.append({**call, "args": args})
+            continue
+        detail = "; ".join(
+            (v.get("detail") or v["kind"]) for v in verdict.violations[:5]
+        )
+        out.append(
+            {
+                **call,
+                "args": args,  # 保留原 code，便于下一轮对照修改
+                "blocked": True,
+                "preflight_error": detail or "cad program rejected by validator",
+                "description": (
+                    (call.get("description") or "").strip()
+                    + f"（服务端拒绝: {detail or 'invalid code'}）"
+                ).strip(),
+            }
+        )
+    return out
 
 
 def compress_context(session_id: str, *, keep_recent_turns: int = 4) -> dict:
@@ -197,20 +284,25 @@ def _soft_plan_hint(soft_plan: dict | None) -> str:
     return "; ".join(parts)
 
 
-def _build_chat_system_prompt(*, plan_mode: bool, vision_on: bool, user_goal: str) -> str:
-    """正文见 app/prompts/chat_system.md（及 plan/vision 片段）。"""
-    tools = build_tools_description(resolve_tool_specs_for_prompt())
-    brief = format_design_brief(user_goal) if user_goal else ""
+def build_chat_system_prompt(
+    *,
+    message: str = "",
+    user_goal: str = "",
+    plan_mode: bool,
+    vision_on: bool,
+    soft_plan: Optional[dict] = None,
+) -> str:
+    """Code Mode 主 prompt：Core + brief + plan/vision，不注入 53 工具工作集。"""
+    brief = format_design_brief(user_goal or message) if (user_goal or message) else ""
     plan_rules = render("chat_plan_on" if plan_mode else "chat_plan_off").rstrip()
     vision_rules = render(
         "chat_vision_on" if vision_on else "chat_vision_off"
     ).rstrip()
     return render(
-        "chat_system",
+        "chat_core",
         BRIEF=brief,
         PLAN_RULES=plan_rules,
         VISION_RULES=vision_rules,
-        TOOLS=tools,
     )
 
 

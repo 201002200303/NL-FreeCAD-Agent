@@ -1,5 +1,6 @@
 """HTTP layer. Workflow logic lives in app.workflow.chat."""
 import asyncio
+import json
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -97,8 +98,18 @@ async def chat(request: ChatRequest):
     sid = request.session_id or f"session_{uuid.uuid4().hex[:8]}"
     payload = request.model_dump(mode="json")
     create_new = not bool(request.session_id)
+    # 预分类（视觉硬伤在 chat_turn 内判定后写回 meta）
+    prelim_kind = chat_workflow.classify_chat_step(
+        message=request.message,
+        tool_results=request.tool_results or None,
+    )
     with trace_api_step(
-        sid, "chat", payload, request.debug_mode, create_new=create_new
+        sid,
+        "chat",
+        payload,
+        request.debug_mode,
+        create_new=create_new,
+        phase_id=prelim_kind,
     ) as (trace, step_name):
         # LLM 是同步阻塞调用；放进线程池，避免拖死整个 uvicorn 事件循环
         # （否则等待模型时 /health 与其它请求全部卡住，客户端表现为「没响应」）。
@@ -111,6 +122,10 @@ async def chat(request: ChatRequest):
             viewport_image=(
                 request.viewport_image.model_dump() if request.viewport_image else None
             ),
+            viewport_images=[
+                v.model_dump() for v in (request.viewport_images or [])
+            ]
+            or None,
             plan_mode=request.plan_mode,
             vision_enabled=request.vision_enabled,
             session_memory=request.session_memory,
@@ -119,6 +134,19 @@ async def chat(request: ChatRequest):
             user_goal=request.user_goal or request.message,
         )
         sid = result.get("session_id") or sid
+        step_kind = result.get("step_kind") or prelim_kind
+        if trace and step_name and step_kind:
+            try:
+                meta_path = Path(trace.path) / step_name / "meta.json"
+                if meta_path.is_file():
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                    meta["step_kind"] = step_kind
+                    meta_path.write_text(
+                        json.dumps(meta, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+            except Exception:
+                pass
         response = ChatResponse(
             status=result.get("status", "error"),
             session_id=sid,
@@ -260,5 +288,5 @@ async def log_execution(request: LogExecutionRequest):
         print(f"[runtime] log_execution event failed: {exc}")
     return {
         "status": "ok",
-        "debug_session_path": str(trace.session_dir),
+        "debug_session_path": str(trace.path),
     }

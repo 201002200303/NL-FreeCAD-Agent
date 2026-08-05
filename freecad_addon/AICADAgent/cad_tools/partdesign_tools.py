@@ -9,7 +9,11 @@ from AICADAgent.cad_tools._helpers import get_object, get_shape
 
 def pad_sketch(doc, name="Pad", sketch="", length=10, body=None,
                reversed=False, midplane=False, type="Length"):
-    """Extrude a sketch (PartDesign::Pad). type: Length | TwoLengths | UpToLast | UpToFirst."""
+    """Extrude a sketch (PartDesign::Pad). type: Length | TwoLengths | UpToLast | UpToFirst.
+
+    midplane=True 时 length 为**总厚度**（关于草图面对称）。FC1.1+ SideType
+    \"Two sides\" 按每侧长度解释，故内部折半下发，保证总厚=length。
+    """
     if body:
         container = get_object(doc, body)
         pad = container.newObject("PartDesign::Pad", name)
@@ -17,16 +21,34 @@ def pad_sketch(doc, name="Pad", sketch="", length=10, body=None,
         pad = doc.addObject("PartDesign::Pad", name)
     pad.Label = name
     pad.Profile = get_object(doc, sketch)
-    pad.Length = float(length)
     pad.Reversed = bool(reversed)
-    # FC 1.1+ deprecates Midplane in favor of SideType
-    if hasattr(pad, "SideType"):
-        pad.SideType = "Two sides" if midplane else "One side"
+
+    has_side_type = hasattr(pad, "SideType")
+    # 契约与 agent_service.app.tools.pad_params.resolve_pad_midplane_params 一致
+    length = float(length)
+    if midplane and has_side_type:
+        api_length = length / 2.0
+        pad.Length = api_length
+        pad.SideType = "Two sides"
+    elif midplane:
+        pad.Length = length
+        pad.Midplane = True
     else:
-        pad.Midplane = bool(midplane)
+        pad.Length = length
+        if has_side_type:
+            pad.SideType = "One side"
+        elif hasattr(pad, "Midplane"):
+            pad.Midplane = False
+
     if hasattr(pad, "Type"):
         pad.Type = type
-    return {"tool": "pad_sketch", "object": pad.Name, "sketch": sketch, "length": length, "type": "PartDesign::Pad"}
+    return {
+        "tool": "pad_sketch",
+        "object": pad.Name,
+        "sketch": sketch,
+        "length": length,
+        "type": "PartDesign::Pad",
+    }
 
 
 def pocket_sketch(doc, name="Pocket", sketch="", length=10, body=None, reversed=False, type="Length"):

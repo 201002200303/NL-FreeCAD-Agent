@@ -20,24 +20,32 @@ def move(doc, target="", dx=0, dy=0, dz=0):
 
 
 def rotate(doc, target="", axis="Z", angle=0, origin_x=0, origin_y=0, origin_z=0):
-    """Rotate object around an axis (X/Y/Z) by angle in degrees."""
+    """绕给定中心旋转对象（公转 Base + 更新 Orientation）。
+
+    FreeCAD Placement.rotate() 在部分版本只改朝向、不绕 pivot 移动 Base；
+    这里显式做 R*(Base-pivot)+pivot，保证圆周布齿等场景正确。
+    """
     obj = get_object(doc, target)
     axis_map = {
         "X": FreeCAD.Vector(1, 0, 0),
         "Y": FreeCAD.Vector(0, 1, 0),
         "Z": FreeCAD.Vector(0, 0, 1),
     }
-    axis_vec = axis_map.get(axis.upper(), FreeCAD.Vector(0, 0, 1))
-    origin = FreeCAD.Vector(float(origin_x), float(origin_y), float(origin_z))
+    axis_vec = axis_map.get(str(axis).upper(), FreeCAD.Vector(0, 0, 1))
+    pivot = FreeCAD.Vector(float(origin_x), float(origin_y), float(origin_z))
+    rot = FreeCAD.Rotation(axis_vec, float(angle))
 
-    plm = obj.Placement
-    plm.rotate(origin, axis_vec, float(angle))
+    plm = FreeCAD.Placement(obj.Placement)
+    rel = plm.Base.sub(pivot)
+    plm.Base = pivot.add(rot.multVec(rel))
+    plm.Rotation = rot.multiply(plm.Rotation)
     obj.Placement = plm
     return {
         "tool": "rotate",
         "object": target,
-        "axis": axis.upper(),
+        "axis": str(axis).upper(),
         "angle": angle,
+        "origin": [float(origin_x), float(origin_y), float(origin_z)],
     }
 
 

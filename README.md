@@ -2,11 +2,20 @@
 
 自然语言驱动的 FreeCAD 特征树建模 Agent。
 
+**当前主路径：Code Mode**（`execute_cad_program`）。详见 [docs/code_mode.md](docs/code_mode.md)。
+
 ---
 
 ## 项目简介
 
-NL-FreeCAD-Agent 是一个 Windows 原生工具，允许用户使用自然语言操控 FreeCAD 的特征树进行参数化建模。它不是一个端到端的 STL 生成器，而是一个**受控的 CAD Tool 编排系统**：用户描述建模意图 → Agent 生成可解释的多步骤建模计划 → FreeCAD 插件在当前文档中逐步执行 CAD Tool → 特征树实时反映变更。
+NL-FreeCAD-Agent 是一个 Windows 原生工具，允许用户使用自然语言操控 FreeCAD 的特征树进行参数化建模。它不是一个端到端的 STL 生成器，而是一个**受控的 CAD 编排系统**：
+
+- 用户描述建模意图
+- Agent 输出受限 CAD 程序（`cad.*` API，经 AST 沙箱校验）
+- FreeCAD 插件在单事务中执行，失败回滚并回灌结构化错误
+- 可选多视图视觉检查做一次修订
+
+底层仍有完整 `TOOL_REGISTRY`（create/boolean/pattern/…），但**不再把几十个工具 schema 塞进主模型上下文**；模型通过 `cad.box` / `cad.polar_pattern` 等薄 API 间接调用它们。
 
 ## 项目背景
 

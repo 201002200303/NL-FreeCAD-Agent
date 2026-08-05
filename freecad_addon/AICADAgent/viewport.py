@@ -1,4 +1,4 @@
-"""Capture the active FreeCAD 3D view for vision checks."""
+"""Capture FreeCAD 3D views for vision checks."""
 
 from __future__ import annotations
 
@@ -7,36 +7,83 @@ import os
 import tempfile
 from typing import Optional
 
+# FreeCAD ActiveView helpers → 标准工程视图
+_VIEW_METHODS = {
+    "front": "viewFront",
+    "back": "viewRear",
+    "side": "viewRight",
+    "right": "viewRight",
+    "left": "viewLeft",
+    "top": "viewTop",
+    "bottom": "viewBottom",
+    "iso": "viewIsometric",
+    "isometric": "viewIsometric",
+}
+
+DEFAULT_VIEWS = ("front", "side", "top", "iso")
+
 
 def capture_viewport(max_edge: int = 1024) -> Optional[dict]:
-    """Return {image_b64, mime} or None if GUI/view unavailable."""
+    """Return {image_b64, mime, name} or None if GUI/view unavailable."""
+    views = capture_views(["iso"], max_edge=max_edge)
+    return views[0] if views else None
+
+
+def capture_views(
+    names: Optional[list[str]] = None,
+    *,
+    max_edge: int = 1024,
+) -> list[dict]:
+    """截取多视图。任一视图失败则跳过该视图；全部失败返回 []（调用方降级）。"""
     try:
         import FreeCADGui
     except ImportError:
-        return None
+        return []
 
     doc = FreeCADGui.ActiveDocument
     if doc is None:
-        return None
+        return []
     view = getattr(doc, "ActiveView", None)
     if view is None:
-        return None
+        return []
 
+    wanted = list(names or DEFAULT_VIEWS)
+    out: list[dict] = []
+    for name in wanted:
+        method = _VIEW_METHODS.get((name or "").lower())
+        if method and hasattr(view, method):
+            try:
+                getattr(view, method)()
+            except Exception as exc:
+                print(f"[AICAD] view {name} orient failed: {exc}")
+                continue
+        shot = _save_current_view(view, name=name, max_edge=max_edge)
+        if shot:
+            out.append(shot)
+    # 尽量回到等轴测，方便用户继续看
+    try:
+        if hasattr(view, "viewIsometric"):
+            view.viewIsometric()
+    except Exception:
+        pass
+    return out
+
+
+def _save_current_view(view, *, name: str, max_edge: int) -> Optional[dict]:
     path = tempfile.mktemp(suffix=".png")
     try:
         try:
             view.fitAll()
         except Exception:
             pass
-        # FreeCAD: saveImage(filename, w, h, color="Current"|"White"|"Black"|"Transparent")
         view.saveImage(path, int(max_edge), int(max_edge), "Current")
         if not os.path.isfile(path) or os.path.getsize(path) < 32:
             return None
         with open(path, "rb") as fh:
             b64 = base64.b64encode(fh.read()).decode("ascii")
-        return {"image_b64": b64, "mime": "image/png"}
+        return {"name": name, "image_b64": b64, "mime": "image/png"}
     except Exception as exc:
-        print(f"[AICAD] viewport capture failed: {exc}")
+        print(f"[AICAD] viewport capture failed ({name}): {exc}")
         return None
     finally:
         try:

@@ -1,5 +1,54 @@
 # Development Log
 
+## 2026-08-04: 阵列语法优先 + 修 rotate 公转
+
+**因**: 齿轮齿堆在边缘一点；日志显示模型用 `for+cad.rotate(pivot=0)`，但本机 `Placement.rotate` 只改朝向不绕原点公转。
+**改**:
+- `cad.polar_pattern(obj, count=…, fuse=…)` / `cad.linear_pattern(obj, offset=(dx,dy,dz), …)` 规范化位置参数；prompt 强制圆周均布走 pattern，禁 for+rotate 布齿。
+- `transform_tools.rotate` 改为 `R*(Base-pivot)+pivot` 真公转（兜底）。
+**验**: pattern API 单测；FreeCADCmd 标准样例含 polar 齿轮。
+
+## 2026-08-04: 修插件 runtime.py 编码损坏 + 标准样例实测
+
+**根因**: PowerShell `Set-Content` 同步 `cad_program/runtime.py` 时 UTF-8 损坏，注释与 `_CAD_TO_TOOL` 粘行 → `IndentationError: unexpected indent (runtime.py, line 14)`；模型误以为自己的 code 缩进问题。
+**修**: 用 Python `Path.write_text(utf-8)` 重写插件 runtime/validate；禁止再用 PS Set-Content 同步。
+**测**: 服务端标准样例 `test_cad_standard_samples`；FreeCADCmd `test_cad_program_samples.py` **6/6 PASS**（齿轮键槽/阶梯轴/支架/对称盒/单行齿轮/executor）。
+
+## 2026-08-04: 修 execute_cad_program 空 code 死循环
+
+**根因**: ① AST 禁 `list.append`（齿轮 `teeth.append` 被拒）；② prefilter 清空 code；③ `ToolCall` schema 丢掉 `blocked/preflight_error` → 客户端只见 `empty code`。
+**修**: 允许安全集合方法；预校验保留原文+错误细节；schema 透传 blocked；`cad.*` 映射 size/center/位置 fuse/cut/rotate；`log_execution` 用 `trace.path`。
+**验**: `test_cad_gear_regression` + 全量 84 passed。
+
+## 2026-08-04: Code Mode 切片4 — 多视图 VLM + Trace 分 step
+
+**多视图**: 客户端 `capture_views(front/side/top/iso)`；`execute_cad_program` 成功后优先多视图回传 `viewport_images`，失败降级单图或跳过。
+**VLM**: `assess_views` 支持多图；`verdict=bad` → `revise_once`；VLM/截图异常 `skipped` 不阻断；`chat_core`/`vision.md` 要求硬伤一次 `execute_cad_program` 修订。
+**Trace**: chat step 预分类 `code_gen|code_repair|tool_feedback`，meta 写回实际 `step_kind`（含 `vision_revise`）。
+**验**: `test_cad_vision_loop` + 全量。
+
+## 2026-08-04: Code Mode 最小闭环（execute_cad_program）
+
+**因**: 上一轮「Context Working Set + 关键词路由」被否，改复现 CADDesigner 最小闭环——模型产出受限 CAD 程序，执行器跑，错了修。
+**服务端**:
+- 新增 `app/cad_program/{validate.py,runtime.py}` — AST 白名单（禁 import/属性逃逸/while/def/class，限 cad 调用/节点/循环数）；`cad.*` → TOOL_REGISTRY，紧凑结果 success/error_type/error_message/failed_line/created。
+- `chat` 新增 `prefilter_tool_calls`：危险 `execute_cad_program` code 服务端直接拒绝并标 blocked。
+- `build_chat_system_prompt` 改为 Core+brief+plan/vision，不再注入 53 工具工作集；`chat_core.md` 重写为 Code Mode 两阶段。
+**客户端**:
+- `cad_program/{validate.py,runtime.py}` 从服务端同步（包前缀改为 `AICADAgent`）。
+- `executor.execute_tool_call` 增加 `execute_cad_program` 分支：单个 openTransaction → run_cad_program → 成功 commit/失败 abort。
+- `agent_runner` 处理 blocked call（不执行，直接回灌服务端错误）。
+**删**: `test_chat_working_set.py` / `test_routing.py`；`app/tools/routing.py` 与 `prompts/packs/*` 从主路径摘除。
+**验**: `pytest` 74 passed。
+
+## 2026-08-04: Context Working Set（规则包 + 工具预路由）
+
+**路由**: `app/tools/routing.py` — 本地关键词决定 task/phase/rule_packs/tool_categories；无 Tool Search 往返。
+**Prompt**: `chat_system.md` → `chat_core.md` + `prompts/packs/*`；齿轮不再注入人形/车辆规则。
+**工具**: chat 只注入 Active 类别完整 schema + Core 查询工具 + Indexed 类别摘要；拆出 `pattern`，`cut_hole`→boolean。
+**pad**: midplane=true 时 length=总厚；FC SideType Two sides 折半下发（`pad_params` 契约）。
+**验**: routing/working_set/pad/prompts/registry 相关测试。
+
 ## 2026-08-04: chat-first 代码整理（删旧闭环耦合）
 
 **客户端**: `agent_runner.py` 重写为仅 chat（~650 行）；删 AgentSession/start_plan/next_step/evaluate/restore；pause/resume chat-safe；panel 去 legacy 信号。

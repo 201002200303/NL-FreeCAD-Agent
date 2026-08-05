@@ -92,11 +92,79 @@ class CadToolExecutor:
                 break
         return results
 
+    def _execute_cad_program(self, call_id: str, args: dict) -> dict:
+        """Run execute_cad_program in a single transaction with compact result."""
+        from AICADAgent.cad_program import run_cad_program
+
+        code = (args or {}).get("code") or ""
+        transaction = (args or {}).get("transaction") or f"txn_{call_id}"
+        try:
+            self._begin(f"{call_id}: execute_cad_program")
+            res = run_cad_program(
+                code,
+                doc=self.doc,
+                registry=TOOL_REGISTRY,
+                transaction=transaction,
+            )
+            if res.get("success"):
+                self._commit()
+                created = res.get("created") or []
+                return {
+                    "call_id": call_id,
+                    "status": "success",
+                    "tool": "execute_cad_program",
+                    "args": args,
+                    "resolved_args": args,
+                    "produced_objects": created,
+                    "source_objects": [],
+                    "name_map_update": {},
+                    "message": None,
+                    "transaction": res.get("transaction"),
+                    "checks": res.get("checks"),
+                }
+            try:
+                self._rollback()
+            except Exception:
+                pass
+            return {
+                "call_id": call_id,
+                "status": "error",
+                "tool": "execute_cad_program",
+                "args": args,
+                "resolved_args": args,
+                "produced_objects": res.get("created") or [],
+                "source_objects": [],
+                "name_map_update": {},
+                "message": res.get("error_message") or res.get("error_type") or "cad program failed",
+                "error_type": res.get("error_type"),
+                "failed_line": res.get("failed_line"),
+                "violations": res.get("violations"),
+            }
+        except Exception as e:  # noqa: BLE001
+            try:
+                self._rollback()
+            except Exception:
+                pass
+            return {
+                "call_id": call_id,
+                "status": "error",
+                "tool": "execute_cad_program",
+                "args": args,
+                "resolved_args": args,
+                "produced_objects": [],
+                "source_objects": [],
+                "name_map_update": {},
+                "message": str(e),
+            }
+
     def execute_tool_call(self, tool_call: dict) -> dict:
         """Execute a single tool call; returns call_id / produced_objects / name_map_update."""
         call_id = tool_call.get("call_id", "unknown")
         tool_name = tool_call.get("tool", "")
         args = tool_call.get("args", {})
+
+        if tool_name == "execute_cad_program":
+            return self._execute_cad_program(call_id, args)
 
         # Idempotency: skip ONLY when same call_id AND same tool+args already
         # succeeded (resume/replay). Chat 常每轮重用 T1/T2——若只按 call_id
