@@ -131,6 +131,7 @@ async def chat(request: ChatRequest):
             session_memory=request.session_memory,
             name_map=request.name_map,
             soft_plan=request.soft_plan,
+            vision_memory=request.vision_memory,
             user_goal=request.user_goal or request.message,
         )
         sid = result.get("session_id") or sid
@@ -154,6 +155,7 @@ async def chat(request: ChatRequest):
             question=result.get("question"),
             tool_calls=result.get("tool_calls") or [],
             soft_plan=result.get("soft_plan"),
+            vision_memory=result.get("vision_memory"),
             plan_mode=bool(result.get("plan_mode", True)),
             vision_enabled=bool(result.get("vision_enabled")),
             vision=result.get("vision"),

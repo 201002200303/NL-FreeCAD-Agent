@@ -18,7 +18,12 @@ from AICADAgent.document_state import get_document_state
 from AICADAgent.executor import CadToolExecutor
 from AICADAgent.debug_settings import is_debug_mode
 from AICADAgent.session_memory import SessionMemory
-from AICADAgent.viewport import capture_viewport, capture_views
+from AICADAgent.viewport import (
+    DEFAULT_VIEWS,
+    capture_views,
+    extract_tool_capture_images,
+    should_autofill_multiview,
+)
 
 AGENT_BASE_URL = "http://127.0.0.1:8765"
 # 含工具列表的 chat 单轮常 30–90s；视觉+多轮回灌更容易超时，给足余量
@@ -51,6 +56,7 @@ class ChatSession:
         self.user_goal = user_goal
         self.name_map: dict = {}
         self.soft_plan: Optional[dict] = None
+        self.vision_memory: Optional[dict] = None
         self.memory = SessionMemory(goal=user_goal, user_input=user_goal)
         self.plan_mode = True
         self.vision_enabled = False
@@ -424,30 +430,30 @@ class AgentRunner(QtCore.QObject):
         viewport = None
         viewport_images = []
         if self.chat and self.chat.vision_enabled:
-            # execute_cad_program 成功后截多视图；否则退回单张当前视口
-            want_multi = False
-            for item in tool_results or []:
-                if not isinstance(item, dict):
-                    continue
-                call = item.get("tool_call") or {}
-                er = item.get("execution_result") or {}
-                if (
-                    call.get("tool") == "execute_cad_program"
-                    and (er.get("status") or "").lower() == "success"
-                ):
-                    want_multi = True
-                    break
+            # 仅在有几何且（模型截图 或 CAD 成功补拍）时带图；空文档不截、不评估
             try:
-                if want_multi:
-                    viewport_images = capture_views(["front", "side", "top", "iso"], max_edge=1024)
+                has_geometry = False
+                for obj in (doc_state or {}).get("objects") or []:
+                    if isinstance(obj, dict) and obj.get("visible", True):
+                        has_geometry = True
+                        break
+                    if not isinstance(obj, dict):
+                        has_geometry = True
+                        break
+                if has_geometry:
+                    viewport_images = extract_tool_capture_images(tool_results)
                     if viewport_images:
                         self.log_message.emit(
-                            f"→ 已截取多视图供视觉检查: {', '.join(v.get('name','') for v in viewport_images)}"
+                            f"→ 使用模型指定视图: {', '.join(v.get('name','') for v in viewport_images)}"
                         )
-                if not viewport_images:
-                    viewport = capture_viewport(1024)
-                    if viewport:
-                        self.log_message.emit("→ 已截取视口供视觉检查")
+                    elif should_autofill_multiview(tool_results):
+                        viewport_images = capture_views(list(DEFAULT_VIEWS), max_edge=1024)
+                        if viewport_images:
+                            self.log_message.emit(
+                                f"→ 模型未截图，已自动补拍: {', '.join(v.get('name','') for v in viewport_images)}"
+                            )
+                elif tool_results:
+                    self.log_message.emit("↷ 文档无可见几何，跳过视觉截图")
             except Exception as exc:
                 self.log_message.emit(f"↷ 视口截图失败，跳过视觉: {exc}")
 
@@ -471,6 +477,7 @@ class AgentRunner(QtCore.QObject):
             "session_memory": memory,
             "name_map": dict(self.chat.name_map) if self.chat else {},
             "soft_plan": self.chat.soft_plan if self.chat else None,
+            "vision_memory": self.chat.vision_memory if self.chat else None,
             "user_goal": self.chat.user_goal if self.chat else "",
             "debug_mode": self.debug_mode,
         }
@@ -538,13 +545,20 @@ class AgentRunner(QtCore.QObject):
             if plan_text:
                 self._emit_chat("thinking", plan_text, label="plan")
 
+        if result.get("vision_memory") is not None:
+            self.chat.vision_memory = result.get("vision_memory")
+
         vision = result.get("vision") or {}
         if vision and not vision.get("skipped"):
             vline = f"{vision.get('verdict')}: {vision.get('summary') or ''}".strip()
             issues = vision.get("issues") or []
             if issues:
                 vline += "\n" + "\n".join(f"- {i}" for i in issues[:6])
+            if vision.get("revise_blocked"):
+                vline += f"\n(本阶段视觉修订已暂停: {vision.get('revise_blocked')})"
             self._emit_chat("thinking", vline, label="vision")
+        elif vision.get("skipped") and vision.get("reason") == "empty_document":
+            self._emit_chat("thinking", "文档无几何，跳过视觉评估", label="vision")
 
         tool_calls = result.get("tool_calls") or []
         if tool_calls:

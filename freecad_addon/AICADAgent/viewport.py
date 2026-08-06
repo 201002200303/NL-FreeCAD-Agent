@@ -21,6 +21,58 @@ _VIEW_METHODS = {
 }
 
 DEFAULT_VIEWS = ("front", "side", "top", "iso")
+MAX_CAPTURE_VIEWS = 4
+
+
+def normalize_view_names(names: Optional[list[str]] = None) -> list[str]:
+    """去重并限制数量；非法名保留但 capture 时会跳过定向。"""
+    wanted = list(names or DEFAULT_VIEWS)
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in wanted:
+        key = str(raw or "").strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+        if len(out) >= MAX_CAPTURE_VIEWS:
+            break
+    return out or list(DEFAULT_VIEWS)
+
+
+def extract_tool_capture_images(tool_results: Optional[list] = None) -> list[dict]:
+    """从本批 tool_results 取出 capture_views 成功截图（取最后一次成功）。"""
+    images: list[dict] = []
+    for item in tool_results or []:
+        if not isinstance(item, dict):
+            continue
+        call = item.get("tool_call") or {}
+        er = item.get("execution_result") or {}
+        if call.get("tool") != "capture_views":
+            continue
+        if (er.get("status") or "").lower() != "success":
+            continue
+        imgs = er.get("viewport_images") or []
+        if imgs:
+            images = list(imgs)
+    return images
+
+
+def should_autofill_multiview(tool_results: Optional[list] = None) -> bool:
+    """建模成功且本批未调用 capture_views → 客户端可补拍四视图。"""
+    had_capture = False
+    cad_ok = False
+    for item in tool_results or []:
+        if not isinstance(item, dict):
+            continue
+        call = item.get("tool_call") or {}
+        er = item.get("execution_result") or {}
+        tool = call.get("tool") or er.get("tool")
+        if tool == "capture_views":
+            had_capture = True
+        if tool == "execute_cad_program" and (er.get("status") or "").lower() == "success":
+            cad_ok = True
+    return cad_ok and not had_capture
 
 
 def capture_viewport(max_edge: int = 1024) -> Optional[dict]:
@@ -47,7 +99,7 @@ def capture_views(
     if view is None:
         return []
 
-    wanted = list(names or DEFAULT_VIEWS)
+    wanted = normalize_view_names(names)
     out: list[dict] = []
     for name in wanted:
         method = _VIEW_METHODS.get((name or "").lower())

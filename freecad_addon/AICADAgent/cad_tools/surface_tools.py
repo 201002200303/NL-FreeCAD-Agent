@@ -8,6 +8,10 @@ from AICADAgent.cad_tools._helpers import get_object, get_shape
 
 
 def _collect_profiles(doc, profile_names: list):
+    try:
+        doc.recompute()
+    except Exception:
+        pass
     profiles = []
     for name in profile_names:
         obj = get_object(doc, name)
@@ -16,6 +20,12 @@ def _collect_profiles(doc, profile_names: list):
             profiles.append(shape.Faces[0])
         elif shape.Wires:
             profiles.append(Part.Face(shape.Wires[0]))
+        elif shape.Edges:
+            try:
+                wire = Part.Wire(Part.__sortEdges__(list(shape.Edges)))
+                profiles.append(Part.Face(wire) if wire.isClosed() else wire)
+            except Exception:
+                profiles.append(shape)
         else:
             profiles.append(shape)
     return profiles

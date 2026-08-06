@@ -20,6 +20,13 @@ from app.llm.llm_provider import call_llm
 from app.memory.prompt import build_compact_document_context, resolve_memory_pack
 from app.prompts import render
 from app.vision import assess_views, vision_available
+from app.vision.memory import (
+    count_visible_objects,
+    format_vision_memory_for_prompt,
+    note_vision_revise_attempt,
+    should_allow_vision_revise,
+    update_vision_memory,
+)
 from app.vision.service import format_vision_for_prompt, needs_code_revision
 from app.workflow.sanitize import sanitize_tool_calls
 
@@ -69,14 +76,19 @@ def chat_turn(
     name_map: Optional[dict] = None,
     soft_plan: Optional[dict] = None,
     user_goal: str = "",
+    vision_memory: Optional[dict] = None,
 ) -> dict:
     """处理一轮对话。返回给 HTTP / 客户端的结构化结果。"""
     sid = session_id or f"session_{uuid.uuid4().hex[:8]}"
     plan_mode = config.CHAT_PLAN_MODE_DEFAULT if plan_mode is None else bool(plan_mode)
     use_vision = vision_available(request_enabled=vision_enabled)
 
+    visible_n = count_visible_objects(document_state)
     vision_result = None
-    if use_vision:
+    allow_vision_revise = False
+    mem = update_vision_memory(vision_memory, soft_plan=soft_plan, vision_result=None)
+
+    if use_vision and visible_n > 0:
         views = list(viewport_images or [])
         if not views and viewport_image and viewport_image.get("image_b64"):
             views = [
@@ -87,17 +99,44 @@ def chat_turn(
                 }
             ]
         if views:
+            prior = [
+                str(i.get("text") or "")
+                for i in (mem.get("open_issues") or [])
+                if isinstance(i, dict)
+            ]
             vision_result = assess_views(
                 views=views,
                 user_goal=user_goal or message,
                 phase_hint=_soft_plan_hint(soft_plan),
                 focus=message[:200] if message else "",
+                acceptance=str(mem.get("acceptance") or ""),
+                prior_issues=prior,
             )
+            mem = update_vision_memory(mem, soft_plan=soft_plan, vision_result=vision_result)
+            allow_vision_revise = should_allow_vision_revise(mem, vision_result)
+            if vision_result and not vision_result.get("skipped"):
+                if allow_vision_revise:
+                    mem = note_vision_revise_attempt(mem)
+                    vision_result["revise_once"] = True
+                else:
+                    vision_result["revise_once"] = False
+                    if needs_code_revision(vision_result):
+                        vision_result["revise_blocked"] = mem.get("stop_reason") or "budget"
+    elif use_vision and visible_n <= 0:
+        vision_result = {
+            "ok": False,
+            "skipped": True,
+            "reason": "empty_document",
+            "verdict": "skip",
+            "issues": [],
+            "suggestions": [],
+            "revise_once": False,
+        }
 
     step_kind = classify_chat_step(
         message=message,
         tool_results=tool_results,
-        vision_hard_issue=needs_code_revision(vision_result),
+        vision_hard_issue=allow_vision_revise,
     )
 
     with conversation_scope(sid) as transcript:
@@ -113,6 +152,8 @@ def chat_turn(
             name_map=name_map or {},
             soft_plan=soft_plan,
             vision_result=vision_result,
+            vision_memory=mem,
+            allow_vision_revise=allow_vision_revise,
             user_goal=user_goal,
         )
         system = build_chat_system_prompt(
@@ -134,6 +175,7 @@ def chat_turn(
                 "tool_calls": [],
                 "soft_plan": soft_plan,
                 "vision": vision_result,
+                "vision_memory": mem,
                 "plan_mode": plan_mode,
                 "vision_enabled": use_vision,
                 "step_kind": step_kind,
@@ -142,6 +184,19 @@ def chat_turn(
 
         parsed = _normalize_chat_result(result, soft_plan=soft_plan, plan_mode=plan_mode)
         parsed["tool_calls"] = prefilter_tool_calls(parsed.get("tool_calls") or [])
+        # 预算用尽或 warn：不因视觉硬推自动修码（仍允许用户明确要求时的建模）
+        if not allow_vision_revise and vision_result and not vision_result.get("skipped"):
+            verdict = str(vision_result.get("verdict") or "").lower()
+            if verdict in ("warn", "ok") or vision_result.get("revise_blocked"):
+                # 若本轮仅回传工具结果且模型仍抛 CAD，保留（用户可能口头要求继续）；
+                # 提示词已约束 warn/预算满勿自动修。
+                pass
+
+        # 阶段切换后用新 soft_plan 再对齐 acceptance
+        mem = update_vision_memory(
+            mem, soft_plan=parsed.get("soft_plan") or soft_plan, vision_result=None
+        )
+
         assistant_text = json.dumps(
             {
                 "message": parsed["message"],
@@ -157,6 +212,7 @@ def chat_turn(
             {
                 "session_id": sid,
                 "vision": vision_result,
+                "vision_memory": mem,
                 "plan_mode": plan_mode,
                 "vision_enabled": use_vision,
                 "step_kind": step_kind,
@@ -316,6 +372,8 @@ def _build_pending_user(
     soft_plan: Optional[dict],
     vision_result: Optional[dict],
     user_goal: str,
+    vision_memory: Optional[dict] = None,
+    allow_vision_revise: bool = False,
 ) -> str:
     parts: list[str] = []
     if message and message.strip():
@@ -355,7 +413,12 @@ def _build_pending_user(
             + "\n```"
         )
 
-    if vision_text := format_vision_for_prompt(vision_result):
+    if mem_text := format_vision_memory_for_prompt(vision_memory):
+        parts.append(mem_text)
+
+    if vision_text := format_vision_for_prompt(
+        vision_result, memory=vision_memory, allow_revise=allow_vision_revise
+    ):
         parts.append(vision_text)
 
     if name_map:

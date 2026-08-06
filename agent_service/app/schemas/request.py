@@ -52,6 +52,10 @@ class ChatRequest(BaseModel):
     session_memory: Optional[dict] = Field(default=None)
     name_map: dict[str, str] = Field(default_factory=dict)
     soft_plan: Optional[dict] = Field(default=None, description="客户端持有的当前 todo")
+    vision_memory: Optional[dict] = Field(
+        default=None,
+        description="视觉主线状态：阶段验收、open_issues、本阶段修订预算",
+    )
     user_goal: str = Field(default="", description="会话最初需求摘要")
     debug_mode: bool = Field(default=False)
 

@@ -42,13 +42,34 @@ def test_chat_core_code_mode():
     )
     assert "Code Mode" in prompt or "参数化建模" in prompt
     assert "execute_cad_program" in prompt
+    assert "cad.delete" in prompt
     assert "Plan 模式（已开启）" in prompt
     assert "当前未启用视觉辅助" in prompt
     assert "右" in prompt and "+X" in prompt
     assert "前" in prompt and "-Y" in prompt
+    assert "闭合截面" in prompt or "拉伸" in prompt
+    assert "cad.extrude" in prompt
+    assert "rot_y=90" in prompt
+    assert "默认轴" in prompt or "轴沿" in prompt
+    assert "cad.hole" in prompt and "axis" in prompt
+    assert "cad.extrude" in prompt and "direction" in prompt
+    assert "polar_pattern" in prompt or "pivot" in prompt or "世界原点" in prompt
     # 不再注入旧工作集 / 规则包
     assert "### create_box" not in prompt
     assert "当前工具工作集" not in prompt
+
+
+def test_vision_on_mentions_capture_views():
+    prompt = chat_mod.build_chat_system_prompt(
+        message="建箱子",
+        user_goal="建箱子",
+        plan_mode=False,
+        vision_on=True,
+    )
+    assert "capture_views" in prompt
+    assert "cad.delete" in prompt
+    assert "warn" in prompt.lower() or "细节" in prompt
+    assert "询问" in prompt or "question" in prompt
 
 
 def test_brief_still_injects_user_input():

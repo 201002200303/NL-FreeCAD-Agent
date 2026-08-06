@@ -1,5 +1,62 @@
 # Development Log
 
+## 2026-08-06: 文档收敛 — 请求级掌控地图
+
+**因**: README/架构仍写旧 Plan/LangGraph；代码量大后难从入口跟数据流。
+**改**:
+- 新增 `docs/request_walkthrough.md`（发消息→chat→prompt→tool 三层→回灌，含行号）
+- 重写 `README.md` 为 Code Mode 权威总览；architecture/code_mode/prompts README 互链
+**注**: 未改运行时代码。
+
+## 2026-08-06: 全面补默认朝向（不止圆柱）
+
+**审计**: cone/torus 无 rot；hole/extrude/rotate/polar 默认轴 Z 未写入 Code Mode；rotate pivot 默认为世界原点。
+**改**: cone/torus 支持 rot_*；tool_specs 写清默认轴/刀轴/拉伸方向/阵列轴；`chat_core`+compact 扩成「回转体/孔/草图拉伸/旋转阵列/盒子」速查；runtime cone/torus 支持 center=。
+
+## 2026-08-06: 恢复圆柱/孔朝向规则（Code Mode 空间回归）
+
+**因**: Code Mode 去掉 tool_specs/知识库后，`chat_core` 只留 frame，无「圆柱默认轴 Z / 侧轮 rot」；紧凑文档上下文也不再附空间规则 → 轮胎躺平、切削轴向错。
+**改**: `chat_core` 增加朝向表（侧轮 `rot_y=90`，轴沿 Y 用 `rot_x`，`cad.hole` 须写 axis）；compact context 每轮附朝向速查；同步 llm_provider / vehicle pack。
+**注**: 旧文档 rot_x=90（轴 Y）与当前 frame（前=-Y、轮在 ±X）不一致，侧轮以 `rot_y=90` 为准。
+
+## 2026-08-05: 修草图拉伸「no closed profile」（同事务未 recompute）
+
+**因**: `execute_cad_program` 整段一事务，中间不 recompute；`extrude_sketch` 读空 Shape→误报无闭合轮廓；模型误判 Body 归属并退回 box。另：`line/rect/circle` 位置参未映射、`rotate(center=)`/`extrude(center=)` 透传 TypeError。
+**改**: extrude/loft 前 recompute + Edges 兜底成 Face；runtime 映射 line/rect/circle 位置参与 rotate center、丢弃 extrude.center；prompt 写明 Part 拉伸无需 Body。
+**验**: FreeCADCmd 单事务 polyline→extrude PASS（体积正确）；`test_cad_runtime` 12 passed。
+
+## 2026-08-05: cad.sketch「不可用」= FreeCAD 模块未热加载
+
+**因**: session_5bace99a 报 `cad.sketch not available`；磁盘/symlink 已有映射，进程仍用启动时旧 `_CAD_TO_TOOL`；模型误判环境不支持草图→退回多 box fuse。
+**改**: executor 每次 `execute_cad_program` reload `cad_program`；错误列出 known API；prompt 禁止因此放弃截面拉伸。
+**验**: 需重启一次 FreeCAD 后新 reload 生效；其后改 runtime 无需再重启。
+
+## 2026-08-05: 主体优先拉伸策略 + cad.sketch/extrude 接通
+
+**因**: 复杂主体用旋转实体 cut/fuse 拼外形，拓扑易碎。
+**改**:
+- prompt：`chat_core`/`chat_plan_on`/`general_part` 要求主体优先「闭合截面→拉伸」，禁旋转实体拼主体。
+- runtime：接通 `cad.sketch/polyline/rect/…/extrude/loft/pad/…` → 既有 TOOL_REGISTRY；同步插件 runtime。
+**验**: `test_cad_runtime`（含 sketch→extrude）/ `test_prompts`。
+
+## 2026-08-05: 视觉门控 — 空文档跳过 + vision_memory 预算
+
+**因**: 未建模就截空图；视觉无主线，warn 也一直修。
+**改**:
+- 客户端：无可见几何不截图；去掉无 CAD 时的 iso 兜底。
+- 服务端：空文档 `skipped=empty_document`；`vision_memory`（阶段 acceptance、open_issues、每阶段最多 2 次自动修）客户端回传。
+- 仅 bad（漂移/间隙/穿模/缺件）且预算未满才自动修；warn → ask_user，用 question 问，不自动改码。
+**验**: `test_vision_memory` / `test_cad_vision_loop` / `test_prompts`。
+
+## 2026-08-05: 同名覆盖 + 模型控截图
+
+**因**: 高达会话叠出 100+ 对象（从不 delete、同名→001）；固定四视图偏斜、模型无法换角。
+**改**:
+- runtime：创建类 `cad.*` 同名先删再建；`cad.delete` 支持列表、缺失跳过；插件 `delete_object` 软失败。
+- 新工具 `capture_views`（executor）；vision 开启时 prompt 要求主动选角；客户端优先用工具截图，未拍且 CAD 成功才补四视图。
+- prompt：重建必须清旧件，禁 `*_Final` 盖住旧几何。
+**验**: `test_cad_runtime` / `test_capture_policy` / `test_prompts`。
+
 ## 2026-08-04: 阵列语法优先 + 修 rotate 公转
 
 **因**: 齿轮齿堆在边缘一点；日志显示模型用 `for+cad.rotate(pivot=0)`，但本机 `Placement.rotate` 只改朝向不绕原点公转。

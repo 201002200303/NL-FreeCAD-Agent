@@ -30,57 +30,73 @@ TOOL_SPECS: dict = {
         "required": ["name", "length", "width", "height"],
     },
     "create_cylinder": {
-        "description": "创建一个圆柱体 (Part::Cylinder)，默认轴沿 Z；支持位置与绕轴旋转",
+        "description": (
+            "圆柱 (Part::Cylinder)。默认轴沿局部 +Z（无 rot=圆盘平放）；pos=底面圆心。"
+            "侧轮轴沿 ±X 用 rot_y=90；轴沿 ±Y 用 rot_x=±90；立柱不转。"
+            "rot 为绕固定世界轴依次旋转（度），非欧拉 YPR。"
+        ),
         "parameters": {
             "name": {"type": "string", "description": "对象名称"},
             "radius": {"type": "float", "description": "半径 (mm)"},
-            "height": {"type": "float", "description": "高度 (mm)"},
+            "height": {"type": "float", "description": "沿局部轴长度 (mm)"},
             "unit": {"type": "string", "default": "mm", "description": "单位，仅支持 mm"},
-            "pos_x": {"type": "float", "default": 0, "description": "X 轴位置 (mm)，底面圆心"},
-            "pos_y": {"type": "float", "default": 0, "description": "Y 轴位置 (mm)"},
-            "pos_z": {"type": "float", "default": 0, "description": "Z 轴位置 (mm)"},
-            "rot_x": {"type": "float", "default": 0, "description": "绕 X 轴旋转角度 (度)，如水平车轮用 90"},
-            "rot_y": {"type": "float", "default": 0, "description": "绕 Y 轴旋转角度 (度)"},
-            "rot_z": {"type": "float", "default": 0, "description": "绕 Z 轴旋转角度 (度)"},
+            "pos_x": {"type": "float", "default": 0, "description": "底面圆心 X (mm)"},
+            "pos_y": {"type": "float", "default": 0, "description": "底面圆心 Y (mm)"},
+            "pos_z": {"type": "float", "default": 0, "description": "底面圆心 Z (mm)"},
+            "rot_x": {"type": "float", "default": 0, "description": "绕世界 X 转(度)；轴改到 ±Y 用 ±90"},
+            "rot_y": {"type": "float", "default": 0, "description": "绕世界 Y 转(度)；轴改到 ±X 用 90（侧轮）"},
+            "rot_z": {"type": "float", "default": 0, "description": "绕世界 Z 转(度)"},
         },
         "required": ["name", "radius", "height"],
     },
     "create_sphere": {
-        "description": "创建一个球体 (Part::Sphere)，参考点为球心",
+        "description": "球体 (Part::Sphere)，pos/center 为球心；无朝向",
         "parameters": {
             "name": {"type": "string", "description": "对象名称"},
             "radius": {"type": "float", "description": "半径 (mm)"},
             "unit": {"type": "string", "default": "mm", "description": "单位，仅支持 mm"},
-            "pos_x": {"type": "float", "default": 0, "description": "X 轴位置 (mm)"},
-            "pos_y": {"type": "float", "default": 0, "description": "Y 轴位置 (mm)"},
-            "pos_z": {"type": "float", "default": 0, "description": "Z 轴位置 (mm)"},
+            "pos_x": {"type": "float", "default": 0, "description": "球心 X (mm)"},
+            "pos_y": {"type": "float", "default": 0, "description": "球心 Y (mm)"},
+            "pos_z": {"type": "float", "default": 0, "description": "球心 Z (mm)"},
         },
         "required": ["name", "radius"],
     },
     "create_cone": {
-        "description": "创建一个圆锥/圆台 (Part::Cone)，参考点为底面中心",
+        "description": (
+            "圆锥/圆台 (Part::Cone)。默认轴沿 +Z；pos=底面中心。"
+            "侧倒同圆柱：轴沿 X 用 rot_y=90，轴沿 Y 用 rot_x=±90。"
+        ),
         "parameters": {
             "name": {"type": "string", "description": "对象名称"},
             "radius1": {"type": "float", "description": "底面半径 (mm)"},
             "radius2": {"type": "float", "description": "顶面半径 (mm)，0 为尖锥"},
-            "height": {"type": "float", "description": "高度 (mm)"},
+            "height": {"type": "float", "description": "沿局部轴高度 (mm)"},
             "unit": {"type": "string", "default": "mm", "description": "单位，仅支持 mm"},
-            "pos_x": {"type": "float", "default": 0, "description": "X 轴位置 (mm)"},
-            "pos_y": {"type": "float", "default": 0, "description": "Y 轴位置 (mm)"},
-            "pos_z": {"type": "float", "default": 0, "description": "Z 轴位置 (mm)"},
+            "pos_x": {"type": "float", "default": 0, "description": "底面中心 X (mm)"},
+            "pos_y": {"type": "float", "default": 0, "description": "底面中心 Y (mm)"},
+            "pos_z": {"type": "float", "default": 0, "description": "底面中心 Z (mm)"},
+            "rot_x": {"type": "float", "default": 0, "description": "绕世界 X 转(度)"},
+            "rot_y": {"type": "float", "default": 0, "description": "绕世界 Y 转(度)；侧倒锥常用 90"},
+            "rot_z": {"type": "float", "default": 0, "description": "绕世界 Z 转(度)"},
         },
         "required": ["name", "radius1", "radius2", "height"],
     },
     "create_torus": {
-        "description": "创建一个圆环 (Part::Torus)",
+        "description": (
+            "圆环 (Part::Torus)。默认大环在局部 XY（轴 +Z，躺着的甜甜圈）；"
+            "竖起立环用 rot_x=90 或 rot_y=90。"
+        ),
         "parameters": {
             "name": {"type": "string", "description": "对象名称"},
             "radius1": {"type": "float", "description": "大圆半径 (mm)"},
             "radius2": {"type": "float", "description": "截面半径 (mm)"},
             "unit": {"type": "string", "default": "mm", "description": "单位，仅支持 mm"},
-            "pos_x": {"type": "float", "default": 0, "description": "X 轴位置 (mm)"},
-            "pos_y": {"type": "float", "default": 0, "description": "Y 轴位置 (mm)"},
-            "pos_z": {"type": "float", "default": 0, "description": "Z 轴位置 (mm)"},
+            "pos_x": {"type": "float", "default": 0, "description": "环心 X (mm)"},
+            "pos_y": {"type": "float", "default": 0, "description": "环心 Y (mm)"},
+            "pos_z": {"type": "float", "default": 0, "description": "环心 Z (mm)"},
+            "rot_x": {"type": "float", "default": 0, "description": "绕世界 X 转(度)；竖环常用 90"},
+            "rot_y": {"type": "float", "default": 0, "description": "绕世界 Y 转(度)"},
+            "rot_z": {"type": "float", "default": 0, "description": "绕世界 Z 转(度)"},
         },
         "required": ["name", "radius1", "radius2"],
     },
@@ -137,10 +153,9 @@ TOOL_SPECS: dict = {
     },
     "cut_hole": {
         "description": (
-            "打圆柱孔。默认：创建钻孔刀圆柱 + Part::Cut 布尔求差，结果名默认 {target}_Hole；"
-            "若传 body 则走草图圆+PartDesign Pocket。"
-            "成功后基体隐藏但树中仍在——后续必须引用返回的结果对象名，不要再改旧 target。"
-            "失败不会隐藏基体。"
+            "打圆柱孔。默认 axis=Z（上下穿）；侧壁必须 axis=X 或 Y。"
+            "默认路径：钻孔刀 + Part::Cut；可选 body= 走 Pocket。"
+            "成功后基体隐藏——后续引用结果名；失败不隐藏基体。"
         ),
         "parameters": {
             "target": {"type": "string", "description": "目标对象名称"},
@@ -152,7 +167,7 @@ TOOL_SPECS: dict = {
             "axis": {
                 "type": "string",
                 "default": "Z",
-                "description": "钻孔轴向 X/Y/Z（仅 Part::Cut 路径；Pocket 路径为草图法向）",
+                "description": "刀轴：Z=顶底（默认）；侧壁孔用 X/Y（与面法向一致）",
             },
             "body": {
                 "type": "string",
@@ -188,10 +203,10 @@ TOOL_SPECS: dict = {
         "required": ["target"],
     },
     "rotate": {
-        "description": "绕轴旋转对象",
+        "description": "绕轴旋转。默认 axis=Z；origin 默认世界原点(0,0,0)而非物体中心——自转务必传 center/pivot=物体中心",
         "parameters": {
             "target": {"type": "string", "description": "目标对象名称"},
-            "axis": {"type": "string", "default": "Z", "description": "旋转轴: X/Y/Z"},
+            "axis": {"type": "string", "default": "Z", "description": "旋转轴 X/Y/Z（默认 Z）"},
             "angle": {"type": "float", "description": "旋转角度 (度)"},
             "origin_x": {"type": "float", "default": 0},
             "origin_y": {"type": "float", "default": 0},
@@ -220,16 +235,16 @@ TOOL_SPECS: dict = {
     },
     "polar_pattern": {
         "description": (
-            "圆周阵列：绕原点/指定中心旋转复制。"
+            "圆周阵列：绕中心旋转复制。默认 axis=Z、中心(0,0,0)——"
+            "侧向圆周须显式 axis=X/Y 与 origin/center。"
             "count=总实例数（含原件）；间隔角=angle/count。"
-            "副本命名 name_prefix2..name_prefix{count}（prefix 空则用 target_2..）。"
-            "齿轮/法兰孔优先用本工具，禁止手写十几次 copy+rotate。"
+            "齿轮/法兰优先本工具，禁止 for+rotate 手搓。"
         ),
         "parameters": {
             "target": {"type": "string", "description": "源对象（第1个实例，位于0°）"},
             "count": {"type": "int", "description": "总数量，含原件，>=2"},
             "angle": {"type": "float", "default": 360, "description": "阵列总角度（度），满圈360"},
-            "axis": {"type": "string", "default": "Z", "description": "旋转轴 X/Y/Z"},
+            "axis": {"type": "string", "default": "Z", "description": "阵列轴 X/Y/Z；齿轮/法兰常用 Z；侧向圆周用 X/Y"},
             "origin_x": {"type": "float", "default": 0, "description": "旋转中心 X"},
             "origin_y": {"type": "float", "default": 0, "description": "旋转中心 Y"},
             "origin_z": {"type": "float", "default": 0, "description": "旋转中心 Z"},
@@ -418,7 +433,11 @@ TOOL_SPECS: dict = {
         "required": ["name"],
     },
     "create_sketch": {
-        "description": "在基准面 XY/XZ/YZ 上创建草图",
+        "description": (
+            "在基准面 XY/XZ/YZ 上创建草图。"
+            "plane 决定局部 UV↔世界轴；随后 extrude 默认沿 +Z，"
+            "XZ/YZ 草图须显式 direction（如 XZ 车身截面 direction=(0,1,0) 或 (1,0,0)）"
+        ),
         "parameters": {
             "name": {"type": "string", "description": "草图名称"},
             "plane": {"type": "string", "default": "XY", "description": "XY, XZ, YZ"},
@@ -588,7 +607,7 @@ TOOL_SPECS: dict = {
         "required": ["name", "sketch"],
     },
     "extrude_sketch": {
-        "description": "Part 模式拉伸草图（无需 Body，生成 Part::Feature）",
+        "description": "Part 拉伸草图（无需 Body）。默认 direction=+Z；草图在 XZ 时车身横向拉伸应 direction=(1,0,0) 或沿法向显式指定",
         "parameters": {
             "name": {"type": "string", "description": "结果对象名"},
             "sketch": {"type": "string", "description": "草图对象名"},

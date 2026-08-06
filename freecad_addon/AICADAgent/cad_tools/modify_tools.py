@@ -15,12 +15,15 @@ def modify_param(doc, target="", param="", value=0):
 
 
 def delete_object(doc, target=""):
-    """Delete an object from the document."""
-    obj = doc.getObject(target)
+    """Delete an object from the document. Missing target is a no-op."""
+    name = str(target or "").strip()
+    if not name:
+        return {"tool": "delete_object", "object": "", "deleted": False}
+    obj = doc.getObject(name)
     if obj is None:
-        raise ValueError(f"Object not found: {target}")
-    doc.removeObject(target)
-    return {"tool": "delete_object", "object": target}
+        return {"tool": "delete_object", "object": name, "deleted": False}
+    doc.removeObject(name)
+    return {"tool": "delete_object", "object": name, "deleted": True}
 
 
 def set_placement(doc, target="", pos_x=0, pos_y=0, pos_z=0,

@@ -8,7 +8,7 @@
 1. 打开对应 `.md`，顶部 `<!-- ... -->` 是用途说明（不进模型）。
 2. `[[NAME]]` 是运行时注入点，不要改错名字。
 3. JSON 示例用普通 `{` / `}`。
-4. **主路径不再注入 53 工具完整 schema**；模型通过 `execute_cad_program` 写受限 `cad.*` 程序。
+4. **主路径不再注入 53 工具完整 schema**；模型通过 `execute_cad_program` 写受限 `cad.*` 程序；视觉开启时可另调 `capture_views`。
 5. `packs/` 为可选任务细则（保留）；主 chat 默认只装 `chat_core` + plan/vision 片段。
 
 ## 文件索引
@@ -30,4 +30,7 @@
 - `app/design/brief.py`
 - `app/vision/service.py` → `assess_views`
 
-架构说明见 [`docs/code_mode.md`](../../../docs/code_mode.md)。
+架构与请求级数据流：
+
+- [`docs/code_mode.md`](../../../docs/code_mode.md) — Code Mode 约定
+- [`docs/request_walkthrough.md`](../../../docs/request_walkthrough.md) — 从发消息到执行的文件/行号地图（含本目录如何拼进 system/user）

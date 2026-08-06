@@ -1,6 +1,14 @@
 # NL-FreeCAD-Agent Architecture Evolution
 
-本文档记录了 NL-FreeCAD-Agent 项目的架构演进历程。
+本文档记录架构演进。**当前主路径 = Code Mode（V0.10）**。
+
+| 用途 | 文档 |
+|------|------|
+| 一次建模请求的数据流 / 行号 / 提示词 | **[../request_walkthrough.md](../request_walkthrough.md)** |
+| Code Mode 约定 | [../code_mode.md](../code_mode.md) |
+| 仓库总览 | [../../README.md](../../README.md) |
+
+以下各版为历史记录；实现细节以走读文档与源码为准。
 
 ## Version History
 

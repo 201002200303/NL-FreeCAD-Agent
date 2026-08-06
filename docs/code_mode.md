@@ -1,6 +1,7 @@
 # Code Mode（当前主路径）
 
-> 状态：已落地最小闭环（2026-08-04）。53 个底层工具仍保留在 FreeCAD 执行器内，不再作为主模型日常 schema。
+> 状态：已落地最小闭环（2026-08-04）。53 个底层工具仍保留在 FreeCAD 执行器内，不再作为主模型日常 schema。  
+> **请求级走读（文件/行号/提示词）**：[request_walkthrough.md](./request_walkthrough.md)
 
 ## 一句话
 
@@ -14,7 +15,8 @@
   → 服务端 prefilter（validate_cad_source）
   → 客户端 CadAPIRuntime + TOOL_REGISTRY，单 openTransaction
   → 失败：error_type / error_message / failed_line → 下一轮修码
-  → 成功：可选 front/side/top/iso → VLM；verdict=bad 则一次修订
+  → 成功：模型可 `capture_views` 选角；未拍则客户端补拍 front/side/top/iso → VLM
+  → 空文档不评估；仅 bad + 阶段预算未满才自动修；warn 问用户
 ```
 
 ## 模块
@@ -22,16 +24,19 @@
 | 位置 | 职责 |
 |------|------|
 | `agent_service/app/cad_program/validate.py` | AST 白名单（禁 import/逃逸/while/def；限节点与 cad 调用数） |
-| `agent_service/app/cad_program/runtime.py` | `cad.*` → TOOL_REGISTRY；`size/center`、`fuse(a,b)`、`polar_pattern` 等参数映射 |
-| `agent_service/app/workflow/chat.py` | Code Mode prompt；`prefilter_tool_calls`；`classify_chat_step` |
-| `agent_service/app/prompts/chat_core.md` | 最小宪法（先理解再 code；阵列用 pattern） |
+| `agent_service/app/cad_program/runtime.py` | `cad.*` → TOOL_REGISTRY；同名创建先删再建；`cad.delete` 支持列表且缺失跳过 |
+| `agent_service/app/vision/memory.py` | `vision_memory` 阶段验收与修订预算 |
+| `agent_service/app/workflow/chat.py` | Code Mode prompt；空文档跳过视觉；预算门控 |
+| `agent_service/app/prompts/chat_core.md` | 最小宪法（先理解再 code；阵列用 pattern；重建先删） |
 | `freecad_addon/.../cad_program/` | 与服务端同规则（UTF-8 同步；勿用 PowerShell Set-Content） |
-| `freecad_addon/.../executor.py` | `execute_cad_program` 单事务分支 |
-| `freecad_addon/.../viewport.py` | `capture_views` 多视图 |
+| `freecad_addon/.../executor.py` | `execute_cad_program` / `capture_views` 分支 |
+| `freecad_addon/.../viewport.py` | `capture_views`；模型截图优先、未拍补拍 |
 
 ## cad.* 约定（模型侧）
 
-- 几何：`cad.box(name=..., size=(L,W,H), center=(x,y,z))`；`cad.cylinder(..., center=...)`
+- 几何：`cad.box(name=..., size=(L,W,H), center=(x,y,z))`；`cad.cylinder(..., center=..., rot_x/y/z=...)`
+- **朝向**：圆柱默认轴 +Z（无 rot = 平放）。侧轮 `rot_y=90`（轴沿 X）；轴沿 Y 用 `rot_x=±90`；`cad.hole` 侧壁孔必须 `axis=X|Y`
+- **主体优先**：`cad.sketch` → `cad.polyline/rect/circle` → `cad.extrude`；多截面用 `cad.loft`；禁止旋转实体拼主体外形
 - 布尔：`cad.fuse(a, b)` / `cad.cut(a, b)`
 - **圆周/直线均布必须用阵列**（禁止 `for` + `cad.rotate` 布齿）：
   - `cad.polar_pattern(tooth, count=12, fuse=True, fuse_name="ToothRing")`

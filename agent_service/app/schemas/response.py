@@ -54,6 +54,9 @@ class ChatResponse(BaseModel):
     question: Optional[str] = Field(default=None)
     tool_calls: list[ToolCall] = Field(default_factory=list)
     soft_plan: Optional[dict] = Field(default=None)
+    vision_memory: Optional[dict] = Field(
+        default=None, description="视觉主线状态（客户端回传并更新）"
+    )
     plan_mode: bool = Field(default=True)
     vision_enabled: bool = Field(default=False)
     vision: Optional[dict] = Field(default=None, description="本轮视觉检查结果")

@@ -35,6 +35,19 @@ _CAD_TO_TOOL = {
     "fillet": "add_fillet",
     "chamfer": "add_chamfer",
     "hole": "cut_hole",
+    "sketch": "create_sketch",
+    "line": "sketch_add_line",
+    "rect": "sketch_add_rect",
+    "circle": "sketch_add_circle",
+    "arc": "sketch_add_arc",
+    "polyline": "sketch_add_polyline",
+    "bspline": "sketch_add_bspline",
+    "constraint": "sketch_add_constraint",
+    "extrude": "extrude_sketch",
+    "pad": "pad_sketch",
+    "pocket": "pocket_sketch",
+    "revolve": "revolve_sketch",
+    "loft": "make_loft",
     "export_step": "export_step",
     "export_stl": "export_stl",
     "save": "save_fcstd",
@@ -57,6 +70,18 @@ _SAFE_BUILTINS = {
 _SAFE_MATH = {name: getattr(math, name) for name in dir(math) if not name.startswith("_")}
 
 _BOOL_COUNTER = {"fuse": 0, "cut": 0, "common": 0}
+
+# 创建类 API：同名已存在时先删再建，避免 FreeCAD 自动改名成 Name001 叠影
+_CREATE_APIS = frozenset({
+    "box", "cylinder", "sphere", "cone", "torus",
+    "fuse", "cut", "common",
+    "sketch", "extrude", "pad", "pocket", "revolve", "loft",
+})
+
+# 草图几何：首参常为 sketch 名
+_SKETCH_GEO_APIS = frozenset({
+    "line", "rect", "circle", "arc", "polyline", "bspline", "constraint",
+})
 
 
 def _as_xyz(value: Any, *, label: str) -> tuple[float, float, float]:
@@ -100,18 +125,18 @@ def _normalize_cad_args(api_name: str, args: tuple, kwargs: dict) -> dict:
             kw.setdefault("anchor", "center")
         return kw
 
-    if api_name == "cylinder":
+    if api_name in ("cylinder", "cone"):
         center = kw.pop("center", None)
         height = float(kw.get("height", 0) or 0)
         if center is not None:
             cx, cy, cz = _as_xyz(center, label="center")
-            # FreeCAD 圆柱 pos 是底面中心；cad.center 按几何中心解释
+            # FreeCAD 圆柱/圆锥 pos 是底面中心；cad.center 按几何中心解释
             kw.setdefault("pos_x", cx)
             kw.setdefault("pos_y", cy)
             kw.setdefault("pos_z", cz - height / 2.0 if height else cz)
         return kw
 
-    if api_name == "sphere":
+    if api_name in ("sphere", "torus"):
         center = kw.pop("center", None)
         if center is not None:
             cx, cy, cz = _as_xyz(center, label="center")
@@ -136,7 +161,8 @@ def _normalize_cad_args(api_name: str, args: tuple, kwargs: dict) -> dict:
             kw["target"] = args[0]
         if "axis" in kw:
             kw["axis"] = _axis_to_name(kw["axis"])
-        pivot = kw.pop("pivot", None) or kw.pop("origin", None)
+        # center / pivot / origin 都表示绕点公转中心
+        pivot = kw.pop("pivot", None) or kw.pop("origin", None) or kw.pop("center", None)
         if pivot is not None:
             ox, oy, oz = _as_xyz(pivot, label="pivot")
             kw.setdefault("origin_x", ox)
@@ -181,12 +207,117 @@ def _normalize_cad_args(api_name: str, args: tuple, kwargs: dict) -> dict:
             kw.setdefault("dz", dz)
         return kw
 
+    if api_name == "line":
+        # cad.line(sk, x1, y1, x2, y2) 或 cad.line(sk, p1=(x,y), p2=(x,y))
+        if len(args) >= 1 and "sketch" not in kw:
+            kw["sketch"] = args[0]
+        if len(args) >= 5:
+            kw.setdefault("x1", float(args[1]))
+            kw.setdefault("y1", float(args[2]))
+            kw.setdefault("x2", float(args[3]))
+            kw.setdefault("y2", float(args[4]))
+        for src, (xa, ya) in (("p1", ("x1", "y1")), ("p2", ("x2", "y2")),
+                              ("start", ("x1", "y1")), ("end", ("x2", "y2"))):
+            pt = kw.pop(src, None)
+            if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                kw.setdefault(xa, float(pt[0]))
+                kw.setdefault(ya, float(pt[1]))
+        return kw
+
+    if api_name == "rect":
+        # cad.rect(sk, x, y, w, h) 角点；或 center=(cx,cy)+width/height
+        if len(args) >= 1 and "sketch" not in kw:
+            kw["sketch"] = args[0]
+        if len(args) >= 5:
+            kw.setdefault("x", float(args[1]))
+            kw.setdefault("y", float(args[2]))
+            kw.setdefault("width", float(args[3]))
+            kw.setdefault("height", float(args[4]))
+        center = kw.pop("center", None)
+        if isinstance(center, (list, tuple)) and len(center) >= 2:
+            w = float(kw.get("width", 10))
+            h = float(kw.get("height", 10))
+            kw["x"] = float(center[0]) - w / 2.0
+            kw["y"] = float(center[1]) - h / 2.0
+        return kw
+
+    if api_name == "circle":
+        # cad.circle(sk, cx, cy, r) 或 center=(cx,cy), radius=r
+        if len(args) >= 1 and "sketch" not in kw:
+            kw["sketch"] = args[0]
+        if len(args) >= 4:
+            kw.setdefault("center_x", float(args[1]))
+            kw.setdefault("center_y", float(args[2]))
+            kw.setdefault("radius", float(args[3]))
+        center = kw.pop("center", None)
+        if isinstance(center, (list, tuple)) and len(center) >= 2:
+            kw.setdefault("center_x", float(center[0]))
+            kw.setdefault("center_y", float(center[1]))
+        return kw
+
+    if api_name in _SKETCH_GEO_APIS:
+        # cad.polyline(sk, points=..., closed=True) 等
+        if len(args) >= 1 and "sketch" not in kw:
+            kw["sketch"] = args[0]
+        return kw
+
+    if api_name in ("extrude", "pad", "pocket", "revolve"):
+        if len(args) >= 1 and "sketch" not in kw:
+            kw["sketch"] = args[0]
+        # 模型常误传 center=；拉伸后应用 cad.move，此处丢弃以免 TypeError
+        kw.pop("center", None)
+        direction = kw.pop("direction", None)
+        if direction is not None:
+            dx, dy, dz = _as_xyz(direction, label="direction")
+            kw.setdefault("direction_x", dx)
+            kw.setdefault("direction_y", dy)
+            kw.setdefault("direction_z", dz)
+        return kw
+
+    if api_name == "loft":
+        if len(args) >= 1 and "profiles" not in kw:
+            kw["profiles"] = args[0]
+        return kw
+
     # 其它 API：若有单个位置参数且无 target，当作 target
     if args and "target" not in kw and api_name in (
         "delete", "scale", "copy", "fillet", "chamfer", "hole", "set_property"
     ):
         kw["target"] = args[0]
     return kw
+
+def _soft_delete(doc: Any, registry: dict[str, Callable], name: str) -> bool:
+    """删除已有对象；不存在则跳过。返回是否实际删除。"""
+    target = str(name or "").strip()
+    if not target:
+        return False
+    getter = getattr(doc, "getObject", None)
+    if callable(getter) and getter(target) is None:
+        return False
+    handler = registry.get("delete_object")
+    if handler is None:
+        return False
+    try:
+        handler(doc, target=target)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        msg = str(exc).lower()
+        if "not found" in msg or "does not exist" in msg:
+            return False
+        raise
+
+
+def _delete_targets(doc: Any, registry: dict[str, Callable], target: Any) -> list[str]:
+    """cad.delete 支持单名或名字列表；缺失对象不报错。"""
+    if isinstance(target, (list, tuple)):
+        names = [str(x).strip() for x in target if str(x).strip()]
+    else:
+        names = [str(target).strip()] if str(target or "").strip() else []
+    deleted: list[str] = []
+    for name in names:
+        if _soft_delete(doc, registry, name):
+            deleted.append(name)
+    return deleted
 
 
 class _CadRuntime:
@@ -200,13 +331,38 @@ class _CadRuntime:
     def __getattr__(self, api_name: str) -> Callable:
         tool_name = _CAD_TO_TOOL.get(api_name)
         if tool_name is None:
-            raise AttributeError(f"cad.{api_name} not available")
+            known = ", ".join(sorted(_CAD_TO_TOOL))
+            raise AttributeError(
+                f"cad.{api_name} not available (not in runtime map). "
+                f"Known: {known}. If this API was just added, retry once; "
+                "executor reloads cad_program each call."
+            )
         handler = self._registry.get(tool_name)
         if handler is None:
             raise RuntimeError(f"tool not registered: {tool_name}")
 
         def _call(*args, **kwargs):
             mapped = _normalize_cad_args(api_name, args, kwargs)
+
+            if api_name == "delete":
+                deleted = _delete_targets(self._doc, self._registry, mapped.get("target"))
+                return {"deleted": deleted}
+
+            # 同名覆盖：创建前先删掉已有对象，避免 Name001 幽灵叠影
+            if api_name in _CREATE_APIS:
+                existing = str(mapped.get("name") or "").strip()
+                if existing:
+                    _soft_delete(self._doc, self._registry, existing)
+
+            # 草图→拉伸/放样前强制 recompute，否则同事务内 Shape 仍为空
+            if api_name in ("extrude", "pad", "pocket", "revolve", "loft"):
+                recompute = getattr(self._doc, "recompute", None)
+                if callable(recompute):
+                    try:
+                        recompute()
+                    except Exception:
+                        pass
+
             result = handler(self._doc, **mapped) or {}
             produced = result.get("object") or result.get("name")
             if produced:

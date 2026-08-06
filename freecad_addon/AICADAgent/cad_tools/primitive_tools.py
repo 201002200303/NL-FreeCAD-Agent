@@ -73,8 +73,8 @@ def create_sphere(doc, name="Sphere", radius=10, unit="mm", pos_x=0, pos_y=0, po
 
 
 def create_cone(doc, name="Cone", radius1=10, radius2=0, height=20, unit="mm",
-                pos_x=0, pos_y=0, pos_z=0):
-    """Create a Part::Cone. Reference point is center of bottom face."""
+                pos_x=0, pos_y=0, pos_z=0, rot_x=0, rot_y=0, rot_z=0):
+    """Create a Part::Cone. Axis along local +Z; pos = bottom-face center."""
     _check_unit(unit)
     if float(radius1) < 0 or float(radius2) < 0 or float(radius1) + float(radius2) <= 0:
         raise ValueError(f"Cone radii must be non-negative and sum > 0, got r1={radius1} r2={radius2}")
@@ -85,13 +85,13 @@ def create_cone(doc, name="Cone", radius1=10, radius2=0, height=20, unit="mm",
     cone.Radius2 = radius2
     cone.Height = height
     cone.Label = name
-    apply_placement(cone, pos_x, pos_y, pos_z)
+    apply_placement(cone, pos_x, pos_y, pos_z, rot_x, rot_y, rot_z)
     return {"tool": "create_cone", "object": cone.Name, "label": cone.Label, "type": "Part::Cone"}
 
 
 def create_torus(doc, name="Torus", radius1=20, radius2=5, unit="mm",
-                 pos_x=0, pos_y=0, pos_z=0):
-    """Create a Part::Torus. radius1=major, radius2=minor."""
+                 pos_x=0, pos_y=0, pos_z=0, rot_x=0, rot_y=0, rot_z=0):
+    """Create a Part::Torus. Major ring in local XY (axis +Z); pos = torus center."""
     _check_unit(unit)
     if float(radius1) <= 0 or float(radius2) <= 0:
         raise ValueError(f"Torus radii must be positive, got R={radius1} r={radius2}")
@@ -101,5 +101,5 @@ def create_torus(doc, name="Torus", radius1=20, radius2=5, unit="mm",
     torus.Radius1 = radius1
     torus.Radius2 = radius2
     torus.Label = name
-    apply_placement(torus, pos_x, pos_y, pos_z)
+    apply_placement(torus, pos_x, pos_y, pos_z, rot_x, rot_y, rot_z)
     return {"tool": "create_torus", "object": torus.Name, "label": torus.Label, "type": "Part::Torus"}

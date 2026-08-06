@@ -53,6 +53,8 @@ def assess_views(
     user_goal: str = "",
     phase_hint: str = "",
     focus: str = "",
+    acceptance: str = "",
+    prior_issues: list[str] | None = None,
 ) -> dict[str, Any]:
     """多视图视觉评估。views=[{name, image_b64, mime}, ...]。失败/不可用 → skipped。"""
     if not vision_available(request_enabled=True):
@@ -96,6 +98,8 @@ def assess_views(
         phase_hint=phase_hint,
         focus=focus,
         view_names=[v["name"] for v in cleaned],
+        acceptance=acceptance,
+        prior_issues=prior_issues or [],
     )
     content: list[dict] = [{"type": "text", "text": prompt}]
     for v in cleaned:
@@ -119,6 +123,8 @@ def assess_views(
                     "content": (
                         "你是 CAD 造型质检助手。根据多视图截图判断模型整体是否合理。"
                         "只输出 JSON，不要 markdown。"
+                        "bad=明显漂移/间隙/穿模/缺件/严重不对称；warn=可问用户的细节；"
+                        "对照阶段验收标准，勿重复已接受问题。"
                     ),
                 },
                 {"role": "user", "content": content},
@@ -140,6 +146,7 @@ def assess_views(
             "views": [v["name"] for v in cleaned],
             "raw": parsed,
         }
+        # revise_once 由 chat 结合 vision_memory 预算最终裁定
         result["revise_once"] = needs_code_revision(result)
         return result
     except Exception as exc:
@@ -162,7 +169,12 @@ def needs_code_revision(result: dict | None) -> bool:
     return (result.get("verdict") or "").lower() == "bad"
 
 
-def format_vision_for_prompt(result: dict | None) -> str:
+def format_vision_for_prompt(
+    result: dict | None,
+    *,
+    memory: dict | None = None,
+    allow_revise: bool | None = None,
+) -> str:
     """渲染进 chat/evaluate 提示词的短片段。"""
     if not result or result.get("skipped"):
         return ""
@@ -176,12 +188,31 @@ def format_vision_for_prompt(result: dict | None) -> str:
         lines.append(f"- 问题: {issue}")
     for tip in (result.get("suggestions") or [])[:6]:
         lines.append(f"- 建议: {tip}")
-    if result.get("revise_once") or needs_code_revision(result):
+
+    verdict = str(result.get("verdict") or "").lower()
+    do_revise = allow_revise if allow_revise is not None else bool(
+        result.get("revise_once") or needs_code_revision(result)
+    )
+    if verdict == "bad" and do_revise:
         lines.append(
-            "- 处置: 视觉硬伤 → 用一次 `execute_cad_program` 修订原程序后重跑；"
-            "不要改需求语义，只修造型问题。"
+            "- 处置: 硬伤（漂移/间隙/穿模/缺件）→ 先 `cad.delete` 清旧件，再一次 "
+            "`execute_cad_program` 修订；视角不清先 `capture_views`。"
         )
-    lines.append("视觉结论是软约束；与用户原文冲突时以用户原文为准。数值以 query/文档状态为准。")
+    elif verdict == "bad" and not do_revise:
+        reason = (memory or {}).get("stop_reason") or result.get("revise_blocked") or "budget"
+        lines.append(
+            f"- 处置: 硬伤仍在，但本阶段视觉修订预算已用尽（{reason}）。"
+            "不要继续自动改码；在 message 说明现状，用 question 问用户是否继续修或接受。"
+        )
+    elif verdict == "warn":
+        lines.append(
+            "- 处置: 细节/warn → **不要自动改码**；在 question 询问用户是否要精修这些点；"
+            "可推进 soft_plan 下一阶段或 awaiting_user。"
+        )
+    else:
+        lines.append("- 处置: 视觉可接受；继续当前阶段或标 done，勿为抛光再改。")
+
+    lines.append("视觉是阶段验收不是无限抛光；与用户原文冲突时以用户原文为准。")
     return "\n".join(lines)
 
 
@@ -191,11 +222,19 @@ def _build_prompt(
     phase_hint: str,
     focus: str,
     view_names: list[str] | None = None,
+    acceptance: str = "",
+    prior_issues: list[str] | None = None,
 ) -> str:
     """正文见 app/prompts/vision.md。"""
     goal_block = f"\n\n用户目标: {user_goal[:800]}" if user_goal else ""
     phase_block = f"\n当前阶段: {phase_hint[:400]}" if phase_hint else ""
+    if acceptance:
+        phase_block += f"\n本阶段验收标准: {acceptance[:400]}"
     focus_block = f"\n特别关注: {focus[:400]}" if focus else ""
+    if prior_issues:
+        focus_block += "\n已知/已提过的问题（勿重复啰嗦）: " + "；".join(
+            str(x)[:120] for x in prior_issues[:8]
+        )
     views_block = ""
     if view_names:
         views_block = f"\n多视图顺序: {', '.join(view_names)}（front/side/top/iso）"

@@ -201,8 +201,23 @@ def build_compact_document_context(
             ]
             if untracked:
                 lines.append("\n未索引对象（仅名称）: " + ", ".join(untracked[:20]))
+        lines.append(_compact_orientation_rules())
         return "\n".join(lines)
 
     from app.llm.llm_provider import _build_document_context
 
-    return _build_document_context(document_state)
+    return _build_document_context(document_state) + "\n" + _compact_orientation_rules()
+
+
+def _compact_orientation_rules() -> str:
+    """每轮都附带：Code Mode 后主 prompt 不再注入 tool_specs，靠这里稳住朝向。"""
+    return (
+        "\n## 朝向速查\n"
+        "- 世界：右=+X，前=-Y，上=+Z。\n"
+        "- cylinder/cone/torus 默认轴 +Z；侧轮 `rot_y=90`；轴沿 Y 用 `rot_x=±90`；"
+        "竖环 torus 用 `rot_x/y=90`。\n"
+        "- `cad.hole` 默认 axis=Z；侧壁孔 axis=X|Y。\n"
+        "- `cad.extrude` 默认 direction=+Z；XZ/YZ 草图必须显式 direction。\n"
+        "- `cad.rotate`/`polar_pattern` 默认 axis=Z、中心常为世界原点；"
+        "自转/侧向圆周须传 center + 正确 axis。"
+    )

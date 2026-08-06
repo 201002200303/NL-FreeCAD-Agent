@@ -87,9 +87,19 @@ def test_format_vision_mentions_revision_hint_when_bad():
             "issues": ["右臂缺失"],
             "suggestions": ["补右臂"],
             "revise_once": True,
-        }
+        },
+        allow_revise=True,
     )
     assert "execute_cad_program" in text or "修订" in text
+
+
+def test_format_vision_budget_exhausted():
+    text = format_vision_for_prompt(
+        {"ok": True, "verdict": "bad", "summary": "仍悬空", "issues": ["悬空"], "revise_blocked": "budget"},
+        memory={"stop_reason": "budget"},
+        allow_revise=False,
+    )
+    assert "预算" in text or "不要继续" in text
 
 
 def test_classify_chat_step_names():

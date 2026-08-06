@@ -94,7 +94,13 @@ class CadToolExecutor:
 
     def _execute_cad_program(self, call_id: str, args: dict) -> dict:
         """Run execute_cad_program in a single transaction with compact result."""
-        from AICADAgent.cad_program import run_cad_program
+        # FreeCAD 进程常驻：磁盘上改了 cad_program 后必须 reload，否则仍用启动时旧 _CAD_TO_TOOL
+        import importlib
+        import AICADAgent.cad_program.validate as _cad_validate
+        import AICADAgent.cad_program.runtime as _cad_runtime
+        importlib.reload(_cad_validate)
+        importlib.reload(_cad_runtime)
+        run_cad_program = _cad_runtime.run_cad_program
 
         code = (args or {}).get("code") or ""
         transaction = (args or {}).get("transaction") or f"txn_{call_id}"
@@ -157,6 +163,54 @@ class CadToolExecutor:
                 "message": str(e),
             }
 
+    def _execute_capture_views(self, call_id: str, args: dict) -> dict:
+        """截取指定工程视图；不改文档，结果供下一轮视觉评估。"""
+        from AICADAgent.viewport import capture_views, normalize_view_names
+
+        views = normalize_view_names((args or {}).get("views"))
+        max_edge = int((args or {}).get("max_edge") or 1024)
+        try:
+            images = capture_views(views, max_edge=max_edge)
+        except Exception as e:  # noqa: BLE001
+            return {
+                "call_id": call_id,
+                "status": "error",
+                "tool": "capture_views",
+                "args": args,
+                "resolved_args": {"views": views, "max_edge": max_edge},
+                "produced_objects": [],
+                "source_objects": [],
+                "name_map_update": {},
+                "viewport_images": [],
+                "message": str(e),
+            }
+        if not images:
+            return {
+                "call_id": call_id,
+                "status": "error",
+                "tool": "capture_views",
+                "args": args,
+                "resolved_args": {"views": views, "max_edge": max_edge},
+                "produced_objects": [],
+                "source_objects": [],
+                "name_map_update": {},
+                "viewport_images": [],
+                "message": "viewport capture failed (no GUI view?)",
+            }
+        names = [str(v.get("name") or "") for v in images]
+        return {
+            "call_id": call_id,
+            "status": "success",
+            "tool": "capture_views",
+            "args": args,
+            "resolved_args": {"views": views, "max_edge": max_edge},
+            "produced_objects": names,
+            "source_objects": [],
+            "name_map_update": {},
+            "viewport_images": images,
+            "message": f"captured {len(images)} views: {', '.join(names)}",
+        }
+
     def execute_tool_call(self, tool_call: dict) -> dict:
         """Execute a single tool call; returns call_id / produced_objects / name_map_update."""
         call_id = tool_call.get("call_id", "unknown")
@@ -165,6 +219,9 @@ class CadToolExecutor:
 
         if tool_name == "execute_cad_program":
             return self._execute_cad_program(call_id, args)
+
+        if tool_name == "capture_views":
+            return self._execute_capture_views(call_id, args)
 
         # Idempotency: skip ONLY when same call_id AND same tool+args already
         # succeeded (resume/replay). Chat 常每轮重用 T1/T2——若只按 call_id

@@ -17,7 +17,7 @@ CAD_API_METHODS = frozenset({
     "move", "rotate", "scale", "copy",
     "linear_pattern", "polar_pattern",
     "delete", "set_property", "get",
-    "sketch", "pad", "pocket", "revolve", "extrude",
+    "sketch", "pad", "pocket", "revolve", "extrude", "loft",
     "line", "rect", "circle", "arc", "polyline", "bspline", "constraint",
     "fillet", "chamfer", "hole",
     "export_step", "export_stl", "save",

@@ -165,15 +165,56 @@ def revolve_sketch(doc, name="Revolution", sketch="", axis_x=0, axis_y=0, axis_z
 
 
 def extrude_sketch(doc, name="Extrude", sketch="", length=10, direction_x=0, direction_y=0, direction_z=1):
-    """Part workbench style: extrude sketch wire without PartDesign Body."""
+    """Part workbench style: extrude sketch wire without PartDesign Body.
+
+    Code Mode 整段程序只在末尾 commit/recompute；此处必须先 recompute，
+    否则刚写入的草图几何 Shape 仍为空，会误报 no closed profile。
+    """
     sk = get_object(doc, sketch)
+    try:
+        doc.recompute()
+    except Exception:
+        pass
+
     shape = sk.Shape if hasattr(sk, "Shape") else Part.getShape(sk, "")
-    if shape.Faces:
-        profile = shape.Faces[0]
-    elif shape.Wires:
-        profile = Part.Face(shape.Wires[0])
-    else:
-        raise ValueError(f"Sketch '{sketch}' has no closed profile to extrude")
+    profile = None
+    if shape is not None and not shape.isNull():
+        if shape.Faces:
+            profile = shape.Faces[0]
+        elif shape.Wires:
+            profile = Part.Face(shape.Wires[0])
+        elif shape.Edges:
+            try:
+                wire = Part.Wire(Part.__sortEdges__(list(shape.Edges)))
+                if wire.isClosed():
+                    profile = Part.Face(wire)
+            except Exception:
+                profile = None
+
+    if profile is None:
+        # 再从 Geometry 拼闭合线（部分 FC 版本 recompute 后仍无 Wire）
+        try:
+            edges = []
+            for geo in sk.Geometry:
+                if geo is None:
+                    continue
+                try:
+                    edges.append(geo.toShape())
+                except Exception:
+                    continue
+            if edges:
+                wire = Part.Wire(Part.__sortEdges__(edges))
+                if wire.isClosed():
+                    profile = Part.Face(wire)
+        except Exception:
+            profile = None
+
+    if profile is None:
+        raise ValueError(
+            f"Sketch '{sketch}' has no closed profile to extrude "
+            "(need closed polyline/rect/circle; Shape empty until recompute)"
+        )
+
     vec = FreeCAD.Vector(float(direction_x), float(direction_y), float(direction_z))
     if vec.Length == 0:
         vec = FreeCAD.Vector(0, 0, 1)
