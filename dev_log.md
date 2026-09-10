@@ -1,5 +1,26 @@
 # Development Log
 
+## 2026-09-10: L5 验证手册固化探针提示词（docs/agent_eval_playbook.md）
+
+**问题**: B1/B4 的提示词此前**没有任何持久化** —— B1 只是 `eval_run.py` 里的
+`DEFAULT_GOAL`，B4 只当过一次性环境变量，A/C/D 组仅存在于聊天正文。跨版本对照
+的前提是提示词字面冻结，靠手抄聊天记录不可靠（B4 正是抓到导出 bug 的那条探针）。
+
+**新增 `docs/agent_eval_playbook.md`**:
+- 分层现状表（L0–L4 见 `tool_validation_pipeline.md`，本手册补 L5）
+- 复现命令（前置条件、`eval_run.py`、`session_report.py`）
+- **探针矩阵 A/B/C/D 逐字提示词 + 通过判据**，并标注 `✅ 已跑` / `待跑`
+  （未跑过的不写进基线表）
+- 基线表：B1（1.1 vs 1.2 完整对照）、B4（修前 vs 修后），含独立复核数字
+- 判读指标含义（含「`awaiting_user` 不是缺陷」的界定）
+- 已知盲区（视觉回路完全未验）与两个未解问题（阶段归属不一致、曲面 bbox）
+- 执行纪律 + 回归门禁（数字已核实：pytest 211 / oracle 19-0）
+
+**串联**: README 文档索引加一行；`eval_run.py` docstring 指向本手册，防止
+未来提示词再次漂移。
+
+**核实**: 手册 §7 的 oracle 命令照抄可跑（19 passed, 0 failed）；pytest 211 passed。
+
 ## 2026-09-10: B4 探针暴露 cad.export_step 契约缺陷（已修）
 
 **背景**: L5 无头驱动跑 B4「创建高达机器人，完成后导出为一个 STEP 文件」——

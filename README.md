@@ -9,6 +9,7 @@
 | **一次请求怎么走（行号级）** | **[docs/request_walkthrough.md](docs/request_walkthrough.md)** ← 掌控入口 |
 | 当前开发主线 | [docs/development_mainline.md](docs/development_mainline.md) |
 | **工具能否用（校验流水线）** | **[docs/tool_validation_pipeline.md](docs/tool_validation_pipeline.md)** |
+| **Agent 效果好不好（L5 验证手册）** | **[docs/agent_eval_playbook.md](docs/agent_eval_playbook.md)** |
 | Code Mode 约定与闭环 | [docs/code_mode.md](docs/code_mode.md) |
 | 已知技术债 | [docs/tech_debt.md](docs/tech_debt.md) |
 | 提示词文件 | [agent_service/app/prompts/README.md](agent_service/app/prompts/README.md) |

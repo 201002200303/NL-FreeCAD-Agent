@@ -29,6 +29,9 @@ L1-L4 已有自动门禁（pytest + 几何 Oracle），但「效果」全在 L5 
 需求一律通过 `EVAL_GOAL` 传入：`freecadcmd -c` 会把额外位置参数当成待打开的文件，
 因此本脚本不读 argv。
 
+**提示词请从 `docs/agent_eval_playbook.md` 逐字复制**，不要改写或手抄 ——
+跨版本指标只有在提示词字面冻结时才可比。该手册同时给出判据与基线表。
+
 跑完会打印 SESSION_ID；再用判读器看阶段轨迹与指标：
 
     python scripts/session_report.py <SESSION_ID>
