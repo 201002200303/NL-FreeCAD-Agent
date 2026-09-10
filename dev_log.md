@@ -1,5 +1,35 @@
 # Development Log
 
+## 2026-09-10: 修「LLM 调用失败」——模型脏 JSON + 诊断分支自身崩溃
+
+**现象**: 面板报「LLM 调用失败，请重试或检查 API 配置」。服务端日志显示该轮 **两次尝试都 JSON 解析失败**。
+
+**两个根因（均实测复现）**:
+
+1. **模型脏 JSON**：deepseek-flash 偶发在**合法 JSON 之后再吐一个多余的 `}`**（抓到真实样本，3577 字符，
+   解析到 3576 就结束，尾部多一个 `}`；`finish_reason=stop`，**不是截断**）。
+   而 `_extract_json_object` 的兜底是「第一个 `{` 到最后一个 `}`」切片 —— 正好把多余的 `}` 包进去，
+   于是**必然**解析失败 → 重试同样失败 → 返回 None。
+2. **诊断分支自己崩溃**：Windows 控制台是 GBK(cp936)，模型输出含 `↔`(U+2194) 时
+   `print(f"... 原始输出: {content[:800]}")` 抛 `UnicodeEncodeError`。
+   异常从 `_attempt_llm_call` 逃出，被 `call_llm` 当成「API 调用失败」——真正的解析错误反而被顶掉、原始输出也没了。
+
+**改**:
+1. `_extract_json_object` 改用标准库 `json.JSONDecoder().raw_decode`（语义正是「只解析开头那个完整值」），
+   容忍尾部多余括号/重复对象/说明文字/前导散文；保留 markdown 围栏与前缀处理。抽出 `_strip_code_fence`。
+2. 新增 `app/console.py::harden_console`，把 stdout/stderr 改为 `errors="replace"`（保留原编码，不整屏乱码）；
+   在 `app/__init__.py` 导入即生效，覆盖服务端所有 print。**不再让生僻字符把诊断分支打崩**。
+3. `_attempt_llm_call` 记录 `finish_reason`；若为 `length` 则错误信息直接点明
+   「输出被 max_tokens 截断，请调大 LLM_MAX_TOKENS」，与「模型写坏 JSON」区分开。
+   诊断打印改为只输出**尾部 400 字符**（JSON 坏点通常在尾部）。
+
+**验**:
+- `test_llm_json_parse.py`（10 项，含真实坏样本形态：尾随 `}` / 连续两个对象 / 前导散文 / 围栏）；
+  修复前其中 4 项为红。
+- `test_llm_provider_robustness.py`（6 项：控制台加固、新进程 import app 自动生效、
+  截断 vs 写坏的归因、尾随杂音不再走重试）。
+- 真机 `call_llm` 压测 8/8 成功（修复前 6 次中 1 次失败）；全量 pytest **189 passed**。
+
 ## 2026-09-10: 修「WinError 10061 服务拒连」报错不可读
 
 **因**: 用户在面板发「创建一个人形的高达模型」→ `<urlopen error [WinError 10061] 由于目标计算机积极拒绝，无法连接。>`。

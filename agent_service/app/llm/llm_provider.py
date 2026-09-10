@@ -149,33 +149,57 @@ def _message_text(message) -> str:
     return str(reasoning).strip()
 
 
+_JSON_DECODER = json.JSONDecoder()
+
+
+def _strip_code_fence(raw: str) -> str:
+    """去掉 ```json / ``` 包裹。"""
+    if not raw.startswith("```"):
+        return raw
+    lines = raw.splitlines()
+    lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
 def _extract_json_object(text: str) -> dict:
+    """取出模型输出里的第一个完整 JSON 对象，容忍前后杂音。
+
+    推理模型（实测 deepseek-flash）偶尔在合法 JSON 之后再多吐一个 `}`、
+    把对象重复一遍、或接一段说明文字。旧实现兜底取「第一个 { 到最后一个 }」，
+    正好把多余的 `}` 包进切片，于是必然解析失败 → 重试两次全败 →
+    用户看到「LLM 调用失败」。
+
+    `JSONDecoder.raw_decode` 的语义正是「只解析开头那个完整值」，
+    比手工 find/rfind 切片更稳，也不会被尾部杂音带偏。
+    """
     if text is None:
         raise json.JSONDecodeError("Expecting value", "", 0)
-    raw = text.strip()
+
+    raw = _strip_code_fence(text.strip())
     if not raw:
         raise json.JSONDecodeError("Expecting value", raw, 0)
 
-    if raw.startswith("```"):
-        lines = raw.splitlines()
-        lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        raw = "\n".join(lines).strip()
-
     if raw.lower().startswith("json"):
         maybe = raw[4:].lstrip(" \t\r\n:")
-        if maybe.startswith("{") or maybe.startswith("["):
+        if maybe.startswith(("{", "[")):
             raw = maybe
 
     try:
         return json.loads(raw)
-    except json.JSONDecodeError:
-        start = raw.find("{")
-        end = raw.rfind("}")
-        if start >= 0 and end > start:
-            return json.loads(raw[start : end + 1])
-        raise
+    except json.JSONDecodeError as exc:
+        original_error = exc
+
+    # 有前导说明文字 / 尾部多余内容：从每个 '{' 起试 parse 第一个完整对象
+    index = raw.find("{")
+    while index >= 0:
+        try:
+            obj, _end = _JSON_DECODER.raw_decode(raw[index:])
+            return obj
+        except json.JSONDecodeError:
+            index = raw.find("{", index + 1)
+    raise original_error
 
 
 def _attempt_llm_call(
@@ -198,17 +222,29 @@ def _attempt_llm_call(
         temperature=0.3,
         max_tokens=LLM_MAX_TOKENS,
     )
-    content = _message_text(response.choices[0].message)
+    choice = response.choices[0]
+    content = _message_text(choice.message)
+    finish_reason = getattr(choice, "finish_reason", None)
     print(
         f"[LLM Provider] ok in {time.time() - t0:.1f}s "
-        f"model={model} out_chars={len(content)} max_tokens={LLM_MAX_TOKENS}"
+        f"model={model} out_chars={len(content)} max_tokens={LLM_MAX_TOKENS} "
+        f"finish={finish_reason}"
     )
     try:
         return _extract_json_object(content), response, None, content
     except json.JSONDecodeError as e:
-        print(f"[LLM Provider] JSON 解析失败: {e}")
-        print(f"[LLM Provider] 原始输出: {content[:800]}")
-        return None, response, f"JSONDecodeError: {e}", content
+        # finish_reason=length 表示撞上 max_tokens：JSON 是被截断的，
+        # 这不是模型「写坏了」，调大 LLM_MAX_TOKENS 才能根治
+        if finish_reason == "length":
+            error = (
+                f"JSONDecodeError: 输出被 max_tokens({LLM_MAX_TOKENS}) 截断，"
+                f"请调大 LLM_MAX_TOKENS。原始错误: {e}"
+            )
+        else:
+            error = f"JSONDecodeError: {e}"
+        print(f"[LLM Provider] JSON 解析失败 (finish={finish_reason}): {e}")
+        print(f"[LLM Provider] 原始输出尾部: {content[-400:]!r}")
+        return None, response, error, content
 
 
 def call_llm(
