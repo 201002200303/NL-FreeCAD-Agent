@@ -119,6 +119,33 @@ def test_rejects_code_that_fails_server_validation():
     assert res["error_type"] in ("validation_error", "syntax_error", "forbidden")
 
 
+def test_math_namespace_supports_attribute_calls():
+    seen = {}
+
+    def fake_box(doc, name="Box", **kwargs):
+        seen["name"] = name
+        return {"object": name}
+
+    res = run_cad_program(
+        'x = cad.box(name=f"B{round(math.sin(math.pi / 2))}", size=(1,1,1), center=(0,0,0))',
+        doc=object(),
+        registry={"create_box": fake_box},
+    )
+    assert res["success"] is True, res
+    assert seen["name"] == "B1"
+
+
+def test_runtime_rejects_large_loop_expansion():
+    res = run_cad_program(
+        'for i in range(100000000):\n    pass',
+        doc=object(),
+        registry={},
+    )
+    assert res["success"] is False
+    assert "range expands" in res["error_message"]
+
+
+
 def test_sketch_polyline_extrude_mapping():
     calls: list[tuple[str, dict]] = []
 
@@ -211,3 +238,99 @@ cad.extrude(name="E", sketch=sk, length=5, direction=(0, 0, 1), center=(0, 0, 0)
     assert ("circle", {"sketch": "S", "cx": 0.0, "cy": 0.0, "r": 4.0}) in calls
     assert ("rotate", {"target": "S", "axis": "X", "angle": -15, "origin": (1.0, 2.0, 3.0)}) in calls
     assert ("extrude", {"name": "E", "sketch": "S"}) in calls
+
+
+def test_cylinder_center_accounts_for_rotation():
+    """侧向圆柱：center 必须是旋转后的几何中心，不能只在世界 Z 减半高。"""
+    from app.cad_program.runtime import (
+        _axis_body_base_from_center,
+        _normalize_cad_args,
+        _rotate_fixed_axes,
+    )
+
+    def _close(a, b, tol=1e-9):
+        assert all(abs(float(x) - float(y)) <= tol for x, y in zip(a, b)), (a, b)
+
+    # 无旋转：仍退化为 pos_z = cz - h/2
+    _close(_axis_body_base_from_center((0, 0, 5), 20), (0.0, 0.0, -5.0))
+
+    # rot_y=90：局部 (0,0,5) → 世界 (+5,0,0)；Base = center - offset
+    base = _axis_body_base_from_center((-24, 0, 70), 10, rot_y=90)
+    _close(base, (-29.0, 0.0, 70.0))
+    mid = _rotate_fixed_axes(0, 0, 5, rot_y=90)
+    _close(mid, (5.0, 0.0, 0.0))
+    _close(tuple(base[i] + mid[i] for i in range(3)), (-24.0, 0.0, 70.0))
+
+    mapped = _normalize_cad_args(
+        "cylinder",
+        (),
+        {"name": "ShoulderJoint_L", "radius": 9, "height": 10, "center": (-24, 0, 70), "rot_y": 90},
+    )
+    assert abs(mapped["pos_x"] + 29.0) < 1e-9
+    assert abs(mapped["pos_y"]) < 1e-9
+    assert abs(mapped["pos_z"] - 70.0) < 1e-9
+    assert mapped["rot_y"] == 90
+
+    # 经 runtime 调用时参数会传到 create_cylinder
+    captured = {}
+
+    def fake_cyl(doc, name="Cyl", radius=5, height=10, **kw):
+        captured.update({"name": name, "radius": radius, "height": height, **kw})
+        return {"object": name, "type": "Part::Cylinder"}
+
+    res = run_cad_program(
+        'cad.cylinder(name="SJ", radius=9, height=10, center=(-24,0,70), rot_y=90)',
+        doc=object(),
+        registry={"create_cylinder": fake_cyl},
+    )
+    assert res["success"] is True, res
+    assert abs(captured["pos_x"] + 29.0) < 1e-9
+    assert abs(captured["pos_y"]) < 1e-9
+    assert abs(captured["pos_z"] - 70.0) < 1e-9
+    assert captured["rot_y"] == 90
+
+
+def test_cone_center_accounts_for_rotation():
+    from app.cad_program.runtime import _normalize_cad_args
+
+    mapped = _normalize_cad_args(
+        "cone",
+        (),
+        {"radius1": 10, "radius2": 0, "height": 20, "center": (0, 0, 0), "rot_x": 90},
+    )
+    # rot_x=90: (0,0,10) → (0,-10,0); Base = (0,10,0)
+    assert abs(mapped["pos_x"]) < 1e-9
+    assert abs(mapped["pos_y"] - 10.0) < 1e-9
+    assert abs(mapped["pos_z"]) < 1e-9
+
+
+def test_move_accepts_positional_and_xyz_aliases():
+    from app.cad_program.runtime import _normalize_cad_args
+
+    m1 = _normalize_cad_args("move", ("Chest", 0, -25, 55), {})
+    assert m1["target"] == "Chest"
+    assert m1["dx"] == 0.0 and m1["dy"] == -25.0 and m1["dz"] == 55.0
+
+    m2 = _normalize_cad_args("move", ("Pelvis",), {"x": 0, "y": -20, "z": 0})
+    assert m2["target"] == "Pelvis"
+    assert m2["dx"] == 0.0 and m2["dy"] == -20.0 and m2["dz"] == 0.0
+    assert "x" not in m2 and "y" not in m2 and "z" not in m2
+
+    m3 = _normalize_cad_args("move", ("A",), {"offset": (1, 2, 3)})
+    assert m3["dx"] == 1.0 and m3["dy"] == 2.0 and m3["dz"] == 3.0
+
+    captured = {}
+
+    def fake_move(doc, target="", dx=0, dy=0, dz=0):
+        captured.update({"target": target, "dx": dx, "dy": dy, "dz": dz})
+        return {"object": target}
+
+    res = run_cad_program(
+        'cad.move("Chest", 0, -25, 55)\ncad.move("Pelvis", x=0, y=-20, z=0)',
+        doc=object(),
+        registry={"move": fake_move},
+    )
+    assert res["success"] is True, res
+    # 最后一次调用
+    assert captured["target"] == "Pelvis"
+    assert captured["dy"] == -20.0

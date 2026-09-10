@@ -3,23 +3,20 @@
 
 import FreeCAD
 
-from AICADAgent.cad_tools._helpers import get_object, get_shape
+from AICADAgent.cad_tools._helpers import get_object, get_world_shape, remove_objects
 
 
 def _boolean_result(doc, name, base_name, tool_name, op, tool_label):
     base_obj = get_object(doc, base_name)
     tool_obj = get_object(doc, tool_name)
-    result_shape = op(get_shape(base_obj), get_shape(tool_obj))
+    result_shape = op(get_world_shape(base_obj), get_world_shape(tool_obj))
 
     feat = doc.addObject("Part::Feature", name)
     feat.Label = name
     feat.Shape = result_shape
 
-    try:
-        base_obj.Visibility = False
-        tool_obj.Visibility = False
-    except Exception:
-        pass
+    # fuse/cut 后删源件，避免 Visibility=False 失败留下幽灵实体（多余扇叶等）
+    removed = remove_objects(doc, [base_name, tool_name])
 
     return {
         "tool": tool_label,
@@ -28,6 +25,8 @@ def _boolean_result(doc, name, base_name, tool_name, op, tool_label):
         "type": "Part::Feature",
         "base": base_name,
         "tool_object": tool_name,
+        "removed": removed,
+        "source": base_name,
     }
 
 

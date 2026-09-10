@@ -56,6 +56,7 @@ class ChatSession:
         self.user_goal = user_goal
         self.name_map: dict = {}
         self.soft_plan: Optional[dict] = None
+        self.phase_state: Optional[dict] = None
         self.vision_memory: Optional[dict] = None
         self.memory = SessionMemory(goal=user_goal, user_input=user_goal)
         self.plan_mode = True
@@ -129,6 +130,7 @@ class AgentRunner(QtCore.QObject):
         self._lifecycle_worker: Optional[HTTPWorker] = None
         self._chat_busy = False
         self._capabilities: dict = {}
+        self._cad_api_compatible: Optional[bool] = None
         self._pending_user_message: Optional[str] = None
         self._chat_epoch = 0
         self._tool_queue: list = []
@@ -284,14 +286,23 @@ class AgentRunner(QtCore.QObject):
     def fetch_capabilities(self):
         worker = HTTPWorker("/agent/capabilities", method="GET", parent=self)
         worker.request_completed.connect(self._on_capabilities)
-        worker.request_failed.connect(
-            lambda e: self.log_message.emit(f"能力探测失败: {e}")
-        )
+        worker.request_failed.connect(self._on_capabilities_failed)
         worker.start()
         self._lifecycle_worker = worker
 
     def _on_capabilities(self, result: dict):
         self._capabilities = result or {}
+        try:
+            from AICADAgent.cad_program.manifest import CAD_API_VERSION
+
+            remote_version = str((result or {}).get("cad_api_version") or "")
+            self._cad_api_compatible = remote_version == CAD_API_VERSION
+            if not self._cad_api_compatible:
+                self.log_message.emit(
+                    f"CAD 程序契约不兼容：插件={CAD_API_VERSION} 服务端={remote_version}；已暂停建模执行"
+                )
+        except Exception:
+            self._cad_api_compatible = False
         vision = (result or {}).get("vision") or {}
         self.log_message.emit(
             f"服务端: chat={result.get('chat')} vision_available={vision.get('available')} "
@@ -299,6 +310,10 @@ class AgentRunner(QtCore.QObject):
         )
         if self.chat is not None and not vision.get("available"):
             self.chat.vision_enabled = False
+
+    def _on_capabilities_failed(self, error: str):
+        self._cad_api_compatible = False
+        self.log_message.emit(f"能力探测失败: {error}；为防止契约漂移，已暂停建模执行")
 
     def set_plan_mode(self, enabled: bool):
         if self.chat is None:
@@ -477,6 +492,7 @@ class AgentRunner(QtCore.QObject):
             "session_memory": memory,
             "name_map": dict(self.chat.name_map) if self.chat else {},
             "soft_plan": self.chat.soft_plan if self.chat else None,
+            "phase_state": self.chat.phase_state if self.chat else None,
             "vision_memory": self.chat.vision_memory if self.chat else None,
             "user_goal": self.chat.user_goal if self.chat else "",
             "debug_mode": self.debug_mode,
@@ -538,6 +554,8 @@ class AgentRunner(QtCore.QObject):
             self.error_occurred.emit(result.get("message") or "chat error")
 
     def _publish_chat_response(self, result: dict):
+        if result.get("phase_state") is not None:
+            self.chat.phase_state = result.get("phase_state")
         if result.get("soft_plan") is not None:
             self.chat.soft_plan = result.get("soft_plan")
             self.soft_plan_updated.emit(self.chat.soft_plan or {})
@@ -585,6 +603,10 @@ class AgentRunner(QtCore.QObject):
             self._emit_chat("system", result.get("message") or "错误")
 
     def _execute_chat_tools(self, tool_calls: list):
+        if self._cad_api_compatible is not True:
+            self.error_occurred.emit("CAD 程序契约版本不兼容，请同步更新服务端与 FreeCAD 插件")
+            self._set_chat_busy(False)
+            return
         if self.executor is None:
             self.executor = CadToolExecutor()
         self._tool_queue = [

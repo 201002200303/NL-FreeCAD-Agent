@@ -29,7 +29,7 @@ TOOL_CATEGORIES: dict[str, dict] = {
         "description": "创建立方体、圆柱、球体、圆锥、圆环等基本体",
         "tools": [
             "create_box", "create_cylinder", "create_sphere",
-            "create_cone", "create_torus",
+            "create_cone", "create_torus", "create_wedge",
         ],
     },
     "boolean": {

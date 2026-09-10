@@ -28,6 +28,41 @@ def get_shape(obj):
     return shape
 
 
+def get_world_shape(obj):
+    """世界坐标 Shape，供 fuse/cut/pattern 使用。
+
+    FreeCAD `obj.Shape.Placement == obj.Placement`：BoundBox 与 OCC 布尔
+    （fuse/cut/common）都按世界位姿计算，**直接用即可，不要再 transform**。
+    命名是为标明「给布尔/阵列用的世界坐标视图」，与 pattern 复制分支
+    「transformShape(增量矩阵) 生成新位姿」区分。
+    """
+    return get_shape(obj)
+
+
+def remove_objects(doc, names):
+    """删除文档对象；缺失跳过。fuse/pattern 后必须删源件，不能只 Visibility=False。
+
+    只隐藏会留下「幽灵扇叶」：原件仍在树里且常继续显示。
+    """
+    deleted = []
+    for name in names or []:
+        target = str(name or "").strip()
+        if not target:
+            continue
+        obj = doc.getObject(target)
+        if obj is None:
+            continue
+        try:
+            doc.removeObject(target)
+            deleted.append(target)
+        except Exception:
+            try:
+                obj.Visibility = False
+            except Exception:
+                pass
+    return deleted
+
+
 def apply_axis_rotation(rot_x=0, rot_y=0, rot_z=0):
     """Compose rotations around fixed X/Y/Z axes (degrees), not yaw-pitch-roll."""
     rot = FreeCAD.Rotation()

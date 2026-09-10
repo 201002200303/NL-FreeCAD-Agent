@@ -9,53 +9,34 @@ cad.* 使用简化签名（size/center/位置参数），在此映射到现有 T
 from __future__ import annotations
 
 import math
+import time
+from types import SimpleNamespace
 import uuid
 from typing import Any, Callable, Optional
 
 from AICADAgent.cad_program.validate import validate_cad_source
+from AICADAgent.cad_program.manifest import CAD_TO_TOOL
 
 # cad.<api> → registry 中的工具名
-_CAD_TO_TOOL = {
-    "box": "create_box",
-    "cylinder": "create_cylinder",
-    "sphere": "create_sphere",
-    "cone": "create_cone",
-    "torus": "create_torus",
-    "cut": "boolean_cut",
-    "fuse": "boolean_fuse",
-    "common": "boolean_common",
-    "move": "move",
-    "rotate": "rotate",
-    "scale": "scale",
-    "copy": "copy_object",
-    "linear_pattern": "linear_pattern",
-    "polar_pattern": "polar_pattern",
-    "delete": "delete_object",
-    "set_property": "modify_param",
-    "fillet": "add_fillet",
-    "chamfer": "add_chamfer",
-    "hole": "cut_hole",
-    "sketch": "create_sketch",
-    "line": "sketch_add_line",
-    "rect": "sketch_add_rect",
-    "circle": "sketch_add_circle",
-    "arc": "sketch_add_arc",
-    "polyline": "sketch_add_polyline",
-    "bspline": "sketch_add_bspline",
-    "constraint": "sketch_add_constraint",
-    "extrude": "extrude_sketch",
-    "pad": "pad_sketch",
-    "pocket": "pocket_sketch",
-    "revolve": "revolve_sketch",
-    "loft": "make_loft",
-    "export_step": "export_step",
-    "export_stl": "export_stl",
-    "save": "save_fcstd",
-}
+_CAD_TO_TOOL = CAD_TO_TOOL
+
+MAX_EXPANDED_OPS = 500
+MAX_LOOP_ITERATIONS = 2000
+MAX_BOOLEAN_OPS = 200
+MAX_EXECUTION_SECONDS = 60.0
+
+
+def _safe_range(*args):
+    value = range(*args)
+    if len(value) > MAX_LOOP_ITERATIONS:
+        raise RuntimeError(
+            f"range expands to {len(value)} iterations; limit is {MAX_LOOP_ITERATIONS}"
+        )
+    return value
 
 _SAFE_BUILTINS = {
     "len": len,
-    "range": range,
+    "range": _safe_range,
     "enumerate": enumerate,
     "min": min,
     "max": max,
@@ -67,15 +48,23 @@ _SAFE_BUILTINS = {
     "set": set,
 }
 
-_SAFE_MATH = {name: getattr(math, name) for name in dir(math) if not name.startswith("_")}
+_SAFE_MATH = SimpleNamespace(
+    **{
+        name: getattr(math, name)
+        for name in (
+            "pi", "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+            "sqrt", "ceil", "floor", "fabs", "radians", "degrees",
+        )
+    }
+)
 
 _BOOL_COUNTER = {"fuse": 0, "cut": 0, "common": 0}
 
 # 创建类 API：同名已存在时先删再建，避免 FreeCAD 自动改名成 Name001 叠影
 _CREATE_APIS = frozenset({
-    "box", "cylinder", "sphere", "cone", "torus",
+    "box", "cylinder", "sphere", "cone", "torus", "wedge",
     "fuse", "cut", "common",
-    "sketch", "extrude", "pad", "pocket", "revolve", "loft",
+    "sketch", "extrude", "pad", "pocket", "revolve", "loft", "sweep",
 })
 
 # 草图几何：首参常为 sketch 名
@@ -105,6 +94,46 @@ def _axis_to_name(axis: Any) -> str:
     return "Z"
 
 
+def _rotate_fixed_axes(
+    vx: float, vy: float, vz: float, *, rot_x: float = 0, rot_y: float = 0, rot_z: float = 0
+) -> tuple[float, float, float]:
+    """Rotate a vector with the same composition as apply_placement (Rx*Ry*Rz, degrees)."""
+    # Placement 旋转合成 R=Rx*Ry*Rz ⇒ 作用到向量时先 Rz 再 Ry 再 Rx（与 _helpers.apply_axis_rotation 一致）
+    x, y, z = float(vx), float(vy), float(vz)
+    for axis, angle in (("z", rot_z), ("y", rot_y), ("x", rot_x)):
+        rad = math.radians(float(angle or 0))
+        if abs(rad) < 1e-15:
+            continue
+        c, s = math.cos(rad), math.sin(rad)
+        if axis == "x":
+            y, z = y * c - z * s, y * s + z * c
+        elif axis == "y":
+            x, z = x * c + z * s, -x * s + z * c
+        else:
+            x, y = x * c - y * s, x * s + y * c
+    return (x, y, z)
+
+
+def _axis_body_base_from_center(
+    center: tuple[float, float, float],
+    height: float,
+    *,
+    rot_x: float = 0,
+    rot_y: float = 0,
+    rot_z: float = 0,
+) -> tuple[float, float, float]:
+    """Map geometric center → FreeCAD bottom-face Base after rot_*.
+
+    Local mid-height is (0,0,h/2). World center = R*(0,0,h/2) + Base, so
+    Base = center - R*(0,0,h/2). Plain Z-only offset breaks once rot_y/x ≠ 0.
+    """
+    cx, cy, cz = center
+    if abs(float(height or 0)) < 1e-15:
+        return (cx, cy, cz)
+    ox, oy, oz = _rotate_fixed_axes(0.0, 0.0, float(height) / 2.0, rot_x=rot_x, rot_y=rot_y, rot_z=rot_z)
+    return (cx - ox, cy - oy, cz - oz)
+
+
 def _normalize_cad_args(api_name: str, args: tuple, kwargs: dict) -> dict:
     """把 cad.* 简化参数映射到 TOOL_REGISTRY handler 参数。"""
     kw = dict(kwargs)
@@ -130,10 +159,17 @@ def _normalize_cad_args(api_name: str, args: tuple, kwargs: dict) -> dict:
         height = float(kw.get("height", 0) or 0)
         if center is not None:
             cx, cy, cz = _as_xyz(center, label="center")
-            # FreeCAD 圆柱/圆锥 pos 是底面中心；cad.center 按几何中心解释
-            kw.setdefault("pos_x", cx)
-            kw.setdefault("pos_y", cy)
-            kw.setdefault("pos_z", cz - height / 2.0 if height else cz)
+            # FreeCAD pos = 底面圆心；cad.center = 几何中心（须在 rot_* 之后仍成立）
+            bx, by, bz = _axis_body_base_from_center(
+                (cx, cy, cz),
+                height,
+                rot_x=float(kw.get("rot_x", 0) or 0),
+                rot_y=float(kw.get("rot_y", 0) or 0),
+                rot_z=float(kw.get("rot_z", 0) or 0),
+            )
+            kw.setdefault("pos_x", bx)
+            kw.setdefault("pos_y", by)
+            kw.setdefault("pos_z", bz)
         return kw
 
     if api_name in ("sphere", "torus"):
@@ -171,14 +207,36 @@ def _normalize_cad_args(api_name: str, args: tuple, kwargs: dict) -> dict:
         return kw
 
     if api_name == "move":
+        # cad.move(obj, dx, dy, dz) | offset=(…) | dx/dy/dz= | 兼容误写 x/y/z=
         if len(args) >= 1 and "target" not in kw:
             kw["target"] = args[0]
+        if len(args) >= 4:
+            kw.setdefault("dx", float(args[1]))
+            kw.setdefault("dy", float(args[2]))
+            kw.setdefault("dz", float(args[3]))
+        elif len(args) == 2 and isinstance(args[1], (list, tuple)) and len(args[1]) >= 3:
+            kw.setdefault("dx", float(args[1][0]))
+            kw.setdefault("dy", float(args[1][1]))
+            kw.setdefault("dz", float(args[1][2]))
         offset = kw.pop("offset", None)
         if offset is not None:
             dx, dy, dz = _as_xyz(offset, label="offset")
             kw.setdefault("dx", dx)
             kw.setdefault("dy", dy)
             kw.setdefault("dz", dz)
+        # 模型常写 x/y/z=，语义仍是相对平移（不是绝对坐标）
+        if "x" in kw and "dx" not in kw:
+            kw["dx"] = float(kw.pop("x"))
+        else:
+            kw.pop("x", None)
+        if "y" in kw and "dy" not in kw:
+            kw["dy"] = float(kw.pop("y"))
+        else:
+            kw.pop("y", None)
+        if "z" in kw and "dz" not in kw:
+            kw["dz"] = float(kw.pop("z"))
+        else:
+            kw.pop("z", None)
         return kw
 
     if api_name == "polar_pattern":
@@ -279,6 +337,31 @@ def _normalize_cad_args(api_name: str, args: tuple, kwargs: dict) -> dict:
             kw["profiles"] = args[0]
         return kw
 
+    if api_name == "sweep":
+        # cad.sweep(name=..., profile=..., path=..., solid=True, frenet=False)
+        if "solid" in kw and "make_solid" not in kw:
+            kw["make_solid"] = bool(kw.pop("solid"))
+        else:
+            kw.pop("solid", None)
+        return kw
+
+    if api_name == "wedge":
+        # cad.wedge(name=..., size=(L,W,H), center=..., tip_scale=0.4, taper_axis="Y")
+        size = kw.pop("size", None)
+        if size is not None:
+            sx, sy, sz = _as_xyz(size, label="size")
+            kw.setdefault("length", sx)
+            kw.setdefault("width", sy)
+            kw.setdefault("height", sz)
+        center = kw.pop("center", None)
+        if center is not None:
+            cx, cy, cz = _as_xyz(center, label="center")
+            kw.setdefault("pos_x", cx)
+            kw.setdefault("pos_y", cy)
+            kw.setdefault("pos_z", cz)
+            kw.setdefault("anchor", "center")
+        return kw
+
     # 其它 API：若有单个位置参数且无 target，当作 target
     if args and "target" not in kw and api_name in (
         "delete", "scale", "copy", "fillet", "chamfer", "hole", "set_property"
@@ -327,6 +410,9 @@ class _CadRuntime:
         self._doc = doc
         self._registry = registry
         self._created = created
+        self.call_count = 0
+        self.boolean_count = 0
+        self.started_at = time.monotonic()
 
     def __getattr__(self, api_name: str) -> Callable:
         tool_name = _CAD_TO_TOOL.get(api_name)
@@ -342,6 +428,15 @@ class _CadRuntime:
             raise RuntimeError(f"tool not registered: {tool_name}")
 
         def _call(*args, **kwargs):
+            self.call_count += 1
+            if self.call_count > MAX_EXPANDED_OPS:
+                raise RuntimeError(f"expanded CAD operation limit exceeded ({MAX_EXPANDED_OPS})")
+            if time.monotonic() - self.started_at > MAX_EXECUTION_SECONDS:
+                raise RuntimeError(f"CAD program time budget exceeded ({MAX_EXECUTION_SECONDS}s)")
+            if api_name in ("cut", "fuse", "common"):
+                self.boolean_count += 1
+                if self.boolean_count > MAX_BOOLEAN_OPS:
+                    raise RuntimeError(f"boolean operation limit exceeded ({MAX_BOOLEAN_OPS})")
             mapped = _normalize_cad_args(api_name, args, kwargs)
 
             if api_name == "delete":
@@ -355,7 +450,7 @@ class _CadRuntime:
                     _soft_delete(self._doc, self._registry, existing)
 
             # 草图→拉伸/放样前强制 recompute，否则同事务内 Shape 仍为空
-            if api_name in ("extrude", "pad", "pocket", "revolve", "loft"):
+            if api_name in ("extrude", "pad", "pocket", "revolve", "loft", "sweep"):
                 recompute = getattr(self._doc, "recompute", None)
                 if callable(recompute):
                     try:
@@ -435,5 +530,9 @@ def run_cad_program(
         "success": True,
         "created": created,
         "transaction": txn,
-        "checks": {"cad_calls": len(created)},
+        "checks": {
+            "cad_calls": runtime.call_count,
+            "created_objects": len(created),
+            "boolean_ops": runtime.boolean_count,
+        },
     }

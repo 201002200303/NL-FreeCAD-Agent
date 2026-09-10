@@ -18,6 +18,11 @@ from app.conversation.transcript import Transcript
 from app.design import format_design_brief
 from app.llm.llm_provider import call_llm
 from app.memory.prompt import build_compact_document_context, resolve_memory_pack
+from app.phase_program import (
+    prepare_phase_tool_calls,
+    reconcile_soft_plan,
+    reduce_phase_feedback,
+)
 from app.prompts import render
 from app.vision import assess_views, vision_available
 from app.vision.memory import (
@@ -75,6 +80,7 @@ def chat_turn(
     session_memory: Optional[dict] = None,
     name_map: Optional[dict] = None,
     soft_plan: Optional[dict] = None,
+    phase_state: Optional[dict] = None,
     user_goal: str = "",
     vision_memory: Optional[dict] = None,
 ) -> dict:
@@ -83,10 +89,16 @@ def chat_turn(
     plan_mode = config.CHAT_PLAN_MODE_DEFAULT if plan_mode is None else bool(plan_mode)
     use_vision = vision_available(request_enabled=vision_enabled)
 
+    phase_reduction = reduce_phase_feedback(
+        soft_plan, tool_results, document_state, phase_state
+    )
+    host_plan = phase_reduction.soft_plan
+    host_phase_state = phase_reduction.phase_state
+
     visible_n = count_visible_objects(document_state)
     vision_result = None
     allow_vision_revise = False
-    mem = update_vision_memory(vision_memory, soft_plan=soft_plan, vision_result=None)
+    mem = update_vision_memory(vision_memory, soft_plan=host_plan, vision_result=None)
 
     if use_vision and visible_n > 0:
         views = list(viewport_images or [])
@@ -112,7 +124,7 @@ def chat_turn(
                 acceptance=str(mem.get("acceptance") or ""),
                 prior_issues=prior,
             )
-            mem = update_vision_memory(mem, soft_plan=soft_plan, vision_result=vision_result)
+            mem = update_vision_memory(mem, soft_plan=host_plan, vision_result=vision_result)
             allow_vision_revise = should_allow_vision_revise(mem, vision_result)
             if vision_result and not vision_result.get("skipped"):
                 if allow_vision_revise:
@@ -150,18 +162,19 @@ def chat_turn(
             document_state=document_state,
             session_memory=session_memory,
             name_map=name_map or {},
-            soft_plan=soft_plan,
+            soft_plan=host_plan,
             vision_result=vision_result,
             vision_memory=mem,
             allow_vision_revise=allow_vision_revise,
             user_goal=user_goal,
+            phase_feedback=phase_reduction.feedback,
         )
         system = build_chat_system_prompt(
             message=message,
             user_goal=user_goal or message,
             plan_mode=plan_mode,
             vision_on=use_vision,
-            soft_plan=soft_plan,
+            soft_plan=host_plan,
         )
 
         note = _transcript_note(message, tool_results, vision_result)
@@ -173,7 +186,8 @@ def chat_turn(
                 "session_id": sid,
                 "message": "LLM 调用失败，请重试或检查 API 配置。",
                 "tool_calls": [],
-                "soft_plan": soft_plan,
+                "soft_plan": host_plan,
+                "phase_state": host_phase_state,
                 "vision": vision_result,
                 "vision_memory": mem,
                 "plan_mode": plan_mode,
@@ -182,8 +196,36 @@ def chat_turn(
                 "context_chars": transcript.total_chars,
             }
 
-        parsed = _normalize_chat_result(result, soft_plan=soft_plan, plan_mode=plan_mode)
-        parsed["tool_calls"] = prefilter_tool_calls(parsed.get("tool_calls") or [])
+        parsed = _normalize_chat_result(result, soft_plan=host_plan, plan_mode=plan_mode)
+        parsed["soft_plan"] = reconcile_soft_plan(
+            parsed.get("soft_plan"), host_plan, phase_state=host_phase_state
+        )
+        prepared_calls, host_phase_state = prepare_phase_tool_calls(
+            parsed.get("tool_calls") or [],
+            session_id=sid,
+            soft_plan=parsed.get("soft_plan"),
+            phase_state=host_phase_state,
+        )
+        parsed["soft_plan"] = reconcile_soft_plan(
+            parsed.get("soft_plan"), parsed.get("soft_plan"), phase_state=host_phase_state
+        )
+        parsed["tool_calls"] = prefilter_tool_calls(prepared_calls)
+        parsed["phase_state"] = host_phase_state
+        phase_status = str(host_phase_state.get("status") or "")
+        unfinished = any(
+            str(item.get("status") or "pending").lower() not in {"done", "completed"}
+            for item in (
+                (parsed.get("soft_plan") or {}).get("items")
+                or (parsed.get("soft_plan") or {}).get("phases")
+                or []
+            )
+            if isinstance(item, dict)
+        )
+        if parsed.get("status") == "done" and (
+            phase_status in {"awaiting_execution", "failed"}
+            or (phase_status == "passed" and unfinished)
+        ):
+            parsed["status"] = "awaiting_tools" if prepared_calls else "awaiting_user"
         # 预算用尽或 warn：不因视觉硬推自动修码（仍允许用户明确要求时的建模）
         if not allow_vision_revise and vision_result and not vision_result.get("skipped"):
             verdict = str(vision_result.get("verdict") or "").lower()
@@ -194,7 +236,7 @@ def chat_turn(
 
         # 阶段切换后用新 soft_plan 再对齐 acceptance
         mem = update_vision_memory(
-            mem, soft_plan=parsed.get("soft_plan") or soft_plan, vision_result=None
+            mem, soft_plan=parsed.get("soft_plan") or host_plan, vision_result=None
         )
 
         assistant_text = json.dumps(
@@ -203,6 +245,7 @@ def chat_turn(
                 "tool_calls": parsed.get("tool_calls") or [],
                 "status": parsed.get("status"),
                 "soft_plan": parsed.get("soft_plan"),
+                "phase_state": parsed.get("phase_state"),
             },
             ensure_ascii=False,
         )
@@ -374,6 +417,7 @@ def _build_pending_user(
     user_goal: str,
     vision_memory: Optional[dict] = None,
     allow_vision_revise: bool = False,
+    phase_feedback: str = "",
 ) -> str:
     parts: list[str] = []
     if message and message.strip():
@@ -412,6 +456,9 @@ def _build_pending_user(
             + json.dumps(soft_plan, ensure_ascii=False, indent=2)
             + "\n```"
         )
+
+    if phase_feedback:
+        parts.append(phase_feedback)
 
     if mem_text := format_vision_memory_for_prompt(vision_memory):
         parts.append(mem_text)

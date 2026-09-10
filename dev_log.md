@@ -1,5 +1,59 @@
 # Development Log
 
+## 2026-08-06: 整测台视觉修正（用户「不对哦」）
+
+**因**: 把手折成 L（折线 makeTube 多段 fuse 丢段）、草图黑线叠影、fillet 竖棱选边炸脚本。
+**修**: `make_sweep` 圆截面改 BSpline 单次 makeTube；整测删草图、去掉 fillet；冒烟 Handle C 形 z_span≈82、Assembled 齐。
+**验**: 需重启 FreeCAD 再跑 `_tool_test_bench.cad.py`。
+
+## 2026-08-06: 删保时捷样例
+
+**删**: `_porsche_911.cad.py` / `docs/samples/porsche_911.md`（块状太丑，暴露工具能力不足）。下一步按工具清单逐个实验入库，不先堆丑样例。
+
+## 2026-08-06: TEST 入库 sweep/wedge + 整测台
+
+**加**: `cad.sweep`→`make_sweep`（圆截面 makeTube）、`cad.wedge`→`create_wedge`；`CAD_API_TEST={sweep,wedge}`。
+**整测**: `data/_tool_test_bench.cad.py` + `docs/samples/tool_test_bench.md`（马克杯=loft/cut + sweep把手 + wedge底座）。
+**冒烟**: Cup/Handle/Assembled bbox 合理。等人反馈 Pass/Fail。
+
+## 2026-08-06: 四旋翼样例脚本（Code Mode）
+
+**出**: `agent_service/data/_drone_quad_x.cad.py` — X 四旋翼+云台；机头=-Y。
+**修**: 飘桨因 polar_pattern fuse Placement；桨叶改直接坐标。起落架/云台按接触重算。
+**档**: `docs/samples/quad_drone_x.md` + 脚本加流程注释，作为多件装配参考样例。
+**修工具**: fuse/pattern Placement；**再修**：fuse 后删源件（不只 Visibility=False）——根治「四臂各留 1 片幽灵扇叶」。样例改回 polar_pattern(fuse)。FreeCADCmd 全 PASS。
+
+## 2026-08-06: 外部 LLM 写 cad 脚本提示词
+
+**加**: `docs/cad_script_writer_prompt.md` — 读 chat_core/code_mode/manifest → 产出可粘 Playground 的 `cad.*`。
+
+## 2026-08-06: CAD Playground 打不开
+
+**因**: PySide6 无 `QPlainTextEdit.setTabStopWidth` → 打开面板 AttributeError。
+**改**: 改用 `setTabStopDistance`；命令入口打印 traceback。
+
+## 2026-08-06: CAD Playground（人当 LLM）
+
+**做什么**: FreeCAD 内停靠面板粘贴 `cad.*` → `CadToolExecutor.execute_cad_program` → 3D 查看。
+**入口**: Workbench「AI CAD Agent」→ CAD Playground（`playground.py`）。
+**删**: 误做的批量 `tests/action_space/` 渠道（只要交互面板）。
+
+## 2026-08-06: cad.move 接通位置参与 x/y/z 别名
+
+**因**: `cad.move(obj, 0, -25, 55)` / `x=/y=/z=` 被丢掉 → 躯干不动、头颈按绝对 center 漂空。
+**改**: runtime 映射位置参与 offset/dx 及 x→dx 别名（仍是相对平移）；双端同步；chat_core 写明相对语义。
+
+## 2026-08-06: 修 cylinder/cone center+rot 映射
+
+**因**: 高达 P3 肩关节 `center=(-24,0,70), rot_y=90` 实测中心≈(-19,0,65)；runtime 只在世界 Z 减 height/2，旋转后几何中心漂半高。
+**改**: `Base = center - R*(0,0,h/2)`，R 与 `apply_placement` 同序；双端 runtime 同步；单测覆盖侧轮/竖轴/cone。
+
+## 2026-08-06: 工具校验流水线设计 + 门闩债暂记
+
+**记**: Phase 门闩 review 发现 → `docs/tech_debt.md`（暂缓）。
+**设**: `docs/tool_validation_pipeline.md` — L0 契约→L4 cad 路径；对照 FreeCAD Placement/默认轴做几何 Oracle；现有 smoke/alignment/probe 归位。
+**主线**: `development_mainline` 下一刀优先工具 Oracle，再收紧门闩。
+
 ## 2026-08-06: 文档收敛 — 请求级掌控地图
 
 **因**: README/架构仍写旧 Plan/LangGraph；代码量大后难从入口跟数据流。

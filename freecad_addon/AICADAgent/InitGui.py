@@ -11,14 +11,14 @@ class AICADAgentWorkbench(FreeCADGui.Workbench):
     Icon = ""  # Will be set once icon is available
 
     def Initialize(self):
-        from AICADAgent.commands import AICAD_OpenPanel
+        from AICADAgent.commands import AICAD_OpenPanel, AICAD_OpenPlayground
 
-        self.list_commands = ["AICAD_OpenPanel"]
+        FreeCAD.Gui.addCommand("AICAD_OpenPanel", AICAD_OpenPanel())
+        FreeCAD.Gui.addCommand("AICAD_OpenPlayground", AICAD_OpenPlayground())
+
+        self.list_commands = ["AICAD_OpenPanel", "AICAD_OpenPlayground"]
         self.appendToolbar("AI CAD Agent", self.list_commands)
         self.appendMenu("AI CAD Agent", self.list_commands)
-
-        # Register with FreeCAD command manager
-        FreeCAD.Gui.addCommand("AICAD_OpenPanel", AICAD_OpenPanel())
 
     def Activated(self):
         pass

@@ -2,7 +2,7 @@
 
 import FreeCAD
 
-from AICADAgent.cad_tools._helpers import get_object, get_shape
+from AICADAgent.cad_tools._helpers import get_object, get_shape, get_world_shape, remove_objects
 
 
 def move(doc, target="", dx=0, dy=0, dz=0):
@@ -182,22 +182,24 @@ def polar_pattern(
     origin = FreeCAD.Vector(float(origin_x), float(origin_y), float(origin_z))
 
     created = []
+    src_world = get_world_shape(src)
     for i in range(1, n):
         inst_name = _pattern_instance_name(name_prefix, target, i + 1)
         if doc.getObject(inst_name) is not None:
             raise ValueError(f"Object already exists: {inst_name}")
-        tmp = _unwrap_copy(doc.copyObject(src, False))
-        shape = get_shape(tmp).copy()
-        placement = FreeCAD.Placement(tmp.Placement)
-        try:
-            doc.removeObject(tmp.Name)
-        except Exception:
-            pass
+        # transformShape(增量矩阵)：在世界坐标 Shape 上绕 origin 旋转，
+        # 几何与 Shape.Placement 同步，后续 fuse 按世界位姿正确布尔。
+        rot = FreeCAD.Rotation(axis_vec, step * i)
+        mat = FreeCAD.Matrix()
+        mat.move(FreeCAD.Vector(-origin.x, -origin.y, -origin.z))
+        mat = rot.toMatrix().multiply(mat)
+        mat.move(origin)
+        shape = src_world.copy().transformShape(mat)
         feat = doc.addObject("Part::Feature", inst_name)
         feat.Label = inst_name
         feat.Shape = shape
-        placement.rotate(origin, axis_vec, step * i)
-        feat.Placement = placement
+        # 不重置 feat.Placement：transformShape 后的 Shape 自带正确世界位姿，
+        # 赋 identity 反而归零造成甩件。
         created.append(feat.Name)
 
     result = {
@@ -217,20 +219,18 @@ def polar_pattern(
         if doc.getObject(fname) is not None:
             raise ValueError(f"Object already exists: {fname}")
         members = [target] + created
-        fused = get_shape(get_object(doc, members[0]))
+        fused = get_world_shape(get_object(doc, members[0]))
         for m in members[1:]:
-            fused = fused.fuse(get_shape(get_object(doc, m)))
+            fused = fused.fuse(get_world_shape(get_object(doc, m)))
         feat = doc.addObject("Part::Feature", fname)
         feat.Label = fname
         feat.Shape = fused
-        for m in members:
-            try:
-                get_object(doc, m).Visibility = False
-            except Exception:
-                pass
+        # 根治幽灵件：fuse 后删源件，不要只 Visibility=False
+        remove_objects(doc, members)
         result["object"] = feat.Name
         result["fused"] = feat.Name
         result["type"] = "Part::Feature"
+        result["removed"] = list(members)
 
     return result
 
@@ -257,24 +257,18 @@ def linear_pattern(
         raise ValueError(f"linear_pattern count must be >= 2, got {count}")
 
     created = []
+    src_world = get_world_shape(src)
     for i in range(1, n):
         inst_name = _pattern_instance_name(name_prefix, target, i + 1)
         if doc.getObject(inst_name) is not None:
             raise ValueError(f"Object already exists: {inst_name}")
-        tmp = _unwrap_copy(doc.copyObject(src, False))
-        shape = get_shape(tmp).copy()
-        placement = FreeCAD.Placement(tmp.Placement)
-        try:
-            doc.removeObject(tmp.Name)
-        except Exception:
-            pass
+        # transformShape(增量矩阵)：在世界坐标 Shape 上平移。
+        mat = FreeCAD.Matrix()
+        mat.move(FreeCAD.Vector(float(dx) * i, float(dy) * i, float(dz) * i))
+        shape = src_world.copy().transformShape(mat)
         feat = doc.addObject("Part::Feature", inst_name)
         feat.Label = inst_name
         feat.Shape = shape
-        placement.Base = placement.Base + FreeCAD.Vector(
-            float(dx) * i, float(dy) * i, float(dz) * i
-        )
-        feat.Placement = placement
         created.append(feat.Name)
 
     result = {
@@ -292,19 +286,16 @@ def linear_pattern(
         if doc.getObject(fname) is not None:
             raise ValueError(f"Object already exists: {fname}")
         members = [target] + created
-        fused = get_shape(get_object(doc, members[0]))
+        fused = get_world_shape(get_object(doc, members[0]))
         for m in members[1:]:
-            fused = fused.fuse(get_shape(get_object(doc, m)))
+            fused = fused.fuse(get_world_shape(get_object(doc, m)))
         feat = doc.addObject("Part::Feature", fname)
         feat.Label = fname
         feat.Shape = fused
-        for m in members:
-            try:
-                get_object(doc, m).Visibility = False
-            except Exception:
-                pass
+        remove_objects(doc, members)
         result["object"] = feat.Name
         result["fused"] = feat.Name
         result["type"] = "Part::Feature"
+        result["removed"] = list(members)
 
     return result

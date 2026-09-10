@@ -3,6 +3,12 @@
 import FreeCAD
 
 from AICADAgent.cad_tools import TOOL_REGISTRY
+from AICADAgent.cad_program.receipt import (
+    decide_replay,
+    diff_documents,
+    document_fingerprint,
+    program_hash,
+)
 
 # args 中引用文档对象名的字段
 _NAME_REF_FIELDS = frozenset({
@@ -40,6 +46,7 @@ class CadToolExecutor:
         # Replaying the same call_id (retry / resume) is a no-op.
         self._completed_call_ids: set[str] = set()
         self._completed_results: dict[str, dict] = {}
+        self._completed_programs: dict[str, dict] = {}
 
     def seed_completed_call_ids(self, call_ids):
         """Mark call_ids as already executed (e.g. restored from server events)."""
@@ -103,6 +110,65 @@ class CadToolExecutor:
         run_cad_program = _cad_runtime.run_cad_program
 
         code = (args or {}).get("code") or ""
+        calculated_hash = program_hash(code)
+        supplied_hash = str((args or {}).get("program_hash") or calculated_hash)
+        execution_key = str(
+            (args or {}).get("execution_key")
+            or f"local:{(args or {}).get('phase_id') or 'ad_hoc'}:{calculated_hash[:16]}"
+        )
+        if supplied_hash != calculated_hash:
+            return {
+                "call_id": call_id,
+                "status": "error",
+                "tool": "execute_cad_program",
+                "args": args,
+                "resolved_args": args,
+                "produced_objects": [],
+                "source_objects": [],
+                "name_map_update": {},
+                "error_type": "program_identity_mismatch",
+                "message": "program_hash does not match normalized code",
+                "program_hash": calculated_hash,
+                "execution_key": execution_key,
+            }
+
+        def _read_document_state():
+            try:
+                from AICADAgent.document_state import get_document_state
+
+                return get_document_state()
+            except Exception:
+                return {"document_name": getattr(self.doc, "Name", ""), "objects": []}
+
+        current_state = _read_document_state()
+        cached = self._completed_programs.get(execution_key)
+        replay = decide_replay(cached, calculated_hash, current_state)
+        if replay == "skip":
+            result = dict(cached.get("result") or {})
+            result["call_id"] = call_id
+            result["args"] = args
+            result["resolved_args"] = args
+            result["skipped_duplicate"] = True
+            result["message"] = result.get("message") or "same Phase Program already committed; skipped"
+            return result
+        if replay in {"conflict", "stale"}:
+            return {
+                "call_id": call_id,
+                "status": "error",
+                "tool": "execute_cad_program",
+                "args": args,
+                "resolved_args": args,
+                "produced_objects": [],
+                "source_objects": [],
+                "name_map_update": {},
+                "error_type": "idempotency_conflict",
+                "message": f"cannot safely replay Phase Program ({replay})",
+                "program_hash": calculated_hash,
+                "execution_key": execution_key,
+            }
+
+        before_state = current_state
+        before_fingerprint = document_fingerprint(before_state)
         transaction = (args or {}).get("transaction") or f"txn_{call_id}"
         try:
             self._begin(f"{call_id}: execute_cad_program")
@@ -114,8 +180,10 @@ class CadToolExecutor:
             )
             if res.get("success"):
                 self._commit()
+                after_state = _read_document_state()
+                state_diff = diff_documents(before_state, after_state)
                 created = res.get("created") or []
-                return {
+                final = {
                     "call_id": call_id,
                     "status": "success",
                     "tool": "execute_cad_program",
@@ -127,11 +195,25 @@ class CadToolExecutor:
                     "message": None,
                     "transaction": res.get("transaction"),
                     "checks": res.get("checks"),
+                    "phase_id": (args or {}).get("phase_id"),
+                    "program_hash": calculated_hash,
+                    "execution_key": execution_key,
+                    "before_fingerprint": before_fingerprint,
+                    "after_fingerprint": document_fingerprint(after_state),
+                    "state_diff": state_diff,
                 }
+                self._completed_programs[execution_key] = {
+                    "program_hash": calculated_hash,
+                    "before_fingerprint": before_fingerprint,
+                    "after_fingerprint": final["after_fingerprint"],
+                    "result": dict(final),
+                }
+                return final
             try:
                 self._rollback()
             except Exception:
                 pass
+            after_state = _read_document_state()
             return {
                 "call_id": call_id,
                 "status": "error",
@@ -145,12 +227,17 @@ class CadToolExecutor:
                 "error_type": res.get("error_type"),
                 "failed_line": res.get("failed_line"),
                 "violations": res.get("violations"),
+                "phase_id": (args or {}).get("phase_id"),
+                "program_hash": calculated_hash,
+                "execution_key": execution_key,
+                "state_diff": diff_documents(before_state, after_state),
             }
         except Exception as e:  # noqa: BLE001
             try:
                 self._rollback()
             except Exception:
                 pass
+            after_state = _read_document_state()
             return {
                 "call_id": call_id,
                 "status": "error",
@@ -161,6 +248,10 @@ class CadToolExecutor:
                 "source_objects": [],
                 "name_map_update": {},
                 "message": str(e),
+                "phase_id": (args or {}).get("phase_id"),
+                "program_hash": calculated_hash,
+                "execution_key": execution_key,
+                "state_diff": diff_documents(before_state, after_state),
             }
 
     def _execute_capture_views(self, call_id: str, args: dict) -> dict:

@@ -35,6 +35,9 @@ logs/
 *.log
 agent_service/debug_sessions/
 
+# Tool-generated knowledge base
+.qoder/
+
 # IDE
 .vscode/
 .idea/

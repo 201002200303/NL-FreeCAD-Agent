@@ -21,7 +21,7 @@
                 → build_chat_system_prompt + _build_pending_user
                 → llm.call_llm  (system + transcript 历史 + pending user)
                 → prefilter_tool_calls (AST)
-            ← ChatResponse { message, tool_calls, soft_plan, … }
+            ← ChatResponse { message, tool_calls, soft_plan, phase_state, … }
         → _on_chat_response
           → _execute_chat_tools
             → executor.execute_tool_call
@@ -49,7 +49,7 @@
 | `document_state` | `document_state.get_document_state()` |
 | `tool_results` | 本轮刚执行完的工具结果（首轮 `[]`） |
 | `session_memory` | `chat.memory.build_pack()`（客户端四层记忆） |
-| `name_map` / `soft_plan` / `vision_memory` / `user_goal` | `ChatSession` |
+| `name_map` / `soft_plan` / `phase_state` / `vision_memory` / `user_goal` | `ChatSession`；其中 phase_state 是宿主控制真相 |
 | `plan_mode` / `vision_enabled` / `debug_mode` | UI 开关 |
 | `viewport_images` | 模型 `capture_views` 或客户端补拍 |
 
@@ -94,7 +94,7 @@ result   = call_llm(pending, system, record=False)  # llm/llm_provider.py 223+
 
 | 步骤 | 位置 | 做什么 |
 |------|------|--------|
-| 规范化 | `_normalize_chat_result` ~457 | status / tool_calls / soft_plan |
+| 规范化 | `_normalize_chat_result` + `phase_program` | status / tool_calls / soft_plan；宿主再附加程序身份并归约 phase_state |
 | AST 预检 | `prefilter_tool_calls` 226–259 | `validate_cad_source`；失败标 `blocked` |
 | 记 transcript | `append_turn(note, assistant_json)` ~209 | 历史用精简 note，避免整份文档快照 |
 
@@ -137,7 +137,7 @@ render("chat_core",
 | 1 | `## 用户消息` | 首轮：用户原文；回灌轮可无 |
 | 2 | `## 工具执行结果` | `tool_results`：call_id / tool / status / 错误 |
 | 3 | 紧凑文档上下文 | `memory/prompt.py` → `build_compact_document_context`（对象 size/center + **朝向速查**） |
-| 4 | `## 当前 soft_plan` | 客户端回传的阶段计划 JSON |
+| 4 | `## 当前 soft_plan` + `宿主阶段门闩` | Agent 规划 JSON + 宿主 phase_state/Acceptance/State Diff |
 | 5 | vision_memory | `format_vision_memory_for_prompt` |
 | 6 | 视觉评估结果 | `format_vision_for_prompt` |
 | 7 | `## name_map` | 对象改名链 |

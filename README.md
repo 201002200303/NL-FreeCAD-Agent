@@ -2,12 +2,15 @@
 
 自然语言驱动的 FreeCAD 特征树建模 Agent（Windows）。
 
-**当前主路径：Code Mode** — 模型输出受限 `cad.*` 程序，经 AST 校验后在 FreeCAD 单事务执行。
+**当前主路径：Phase Program Code Mode** — Agent 自主规划语义阶段并输出受限 `cad.*` 程序；宿主负责程序身份、单事务执行、确定性验收、State Diff 和阶段推进。
 
 | 想了解… | 文档 |
 |---------|------|
 | **一次请求怎么走（行号级）** | **[docs/request_walkthrough.md](docs/request_walkthrough.md)** ← 掌控入口 |
+| 当前开发主线 | [docs/development_mainline.md](docs/development_mainline.md) |
+| **工具能否用（校验流水线）** | **[docs/tool_validation_pipeline.md](docs/tool_validation_pipeline.md)** |
 | Code Mode 约定与闭环 | [docs/code_mode.md](docs/code_mode.md) |
+| 已知技术债 | [docs/tech_debt.md](docs/tech_debt.md) |
 | 提示词文件 | [agent_service/app/prompts/README.md](agent_service/app/prompts/README.md) |
 | 架构演进（含归档） | [docs/architecture/README.md](docs/architecture/README.md) |
 
@@ -15,7 +18,7 @@
 
 ## 一句话
 
-用户描述意图 → Agent 服务拼 prompt、调 LLM → 返回 `execute_cad_program{code}` → FreeCAD 插件执行 → 失败结构化回灌修码 → 可选多视图 VLM 修订。
+用户描述意图 → Agent 规划语义阶段 → 返回 Phase Program → 宿主预检并在 FreeCAD 单事务执行 → 确定性验收与 State Diff → 通过后推进、失败只修当前阶段 → 可选多视图 VLM 补充语义检查。
 
 底层仍有完整 `TOOL_REGISTRY`（约 53 个），但**不再把完整 schema 塞进主模型上下文**；模型通过 `cad.box` / `cad.polar_pattern` 等薄 API 间接调用。
 
@@ -50,6 +53,7 @@
 2. **三层工具**：`cad.*`（L1）→ `cad_program` 映射（L2）→ `TOOL_REGISTRY` 实现（L3）。详见走读文档 §7。  
 3. **双进程**：Agent 不碰 FreeCAD GUI；插件不做 LLM。  
 4. **人工在环**：可对话澄清、停手、改指示；视觉 warn 默认问用户而非空转修码。
+5. **Agent 规划、宿主治理**：soft_plan 可动态调整；Phase State 只能由程序回执和确定性验收推进。
 
 ---
 

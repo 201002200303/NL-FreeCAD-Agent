@@ -54,6 +54,9 @@ class ChatResponse(BaseModel):
     question: Optional[str] = Field(default=None)
     tool_calls: list[ToolCall] = Field(default_factory=list)
     soft_plan: Optional[dict] = Field(default=None)
+    phase_state: Optional[dict] = Field(
+        default=None, description="宿主依据程序回执和确定性验收归约出的阶段状态"
+    )
     vision_memory: Optional[dict] = Field(
         default=None, description="视觉主线状态（客户端回传并更新）"
     )

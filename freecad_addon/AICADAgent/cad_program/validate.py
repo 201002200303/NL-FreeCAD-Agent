@@ -10,19 +10,7 @@ import ast
 from dataclasses import dataclass, field
 from typing import Any
 
-# cad.* 允许的方法名（薄包装现有 TOOL_REGISTRY；此处只校验名字存在）
-CAD_API_METHODS = frozenset({
-    "box", "cylinder", "sphere", "cone", "torus",
-    "cut", "fuse", "common",
-    "move", "rotate", "scale", "copy",
-    "linear_pattern", "polar_pattern",
-    "delete", "set_property", "get",
-    "sketch", "pad", "pocket", "revolve", "extrude", "loft",
-    "line", "rect", "circle", "arc", "polyline", "bspline", "constraint",
-    "fillet", "chamfer", "hole",
-    "export_step", "export_stl", "save",
-    "document", "validate", "measure",
-})
+from AICADAgent.cad_program.manifest import CAD_API_METHODS
 
 # 可选的 math 白名单
 MATH_ATTRS = frozenset({

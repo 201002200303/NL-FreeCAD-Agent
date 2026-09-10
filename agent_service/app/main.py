@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app import config as app_config
 from app.config import VERSION
+from app.cad_program.manifest import CAD_API_VERSION
 from app.conversation import conversation_scope
 from app.conversation.notes import format_resume_note
 from app.debug.middleware import attach_debug_fields, trace_api_step
@@ -82,6 +83,8 @@ async def capabilities():
     return {
         "version": VERSION,
         "chat": True,
+        "phase_program": True,
+        "cad_api_version": CAD_API_VERSION,
         "plan_mode_default": app_config.CHAT_PLAN_MODE_DEFAULT,
         "vision": {
             "enabled": app_config.VISION_ENABLED,
@@ -131,6 +134,7 @@ async def chat(request: ChatRequest):
             session_memory=request.session_memory,
             name_map=request.name_map,
             soft_plan=request.soft_plan,
+            phase_state=request.phase_state,
             vision_memory=request.vision_memory,
             user_goal=request.user_goal or request.message,
         )
@@ -155,6 +159,7 @@ async def chat(request: ChatRequest):
             question=result.get("question"),
             tool_calls=result.get("tool_calls") or [],
             soft_plan=result.get("soft_plan"),
+            phase_state=result.get("phase_state"),
             vision_memory=result.get("vision_memory"),
             plan_mode=bool(result.get("plan_mode", True)),
             vision_enabled=bool(result.get("vision_enabled")),

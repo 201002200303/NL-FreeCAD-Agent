@@ -1,7 +1,7 @@
 # CAD Tool Registry
 
 from AICADAgent.cad_tools.primitive_tools import (
-    create_box, create_cylinder, create_sphere, create_cone, create_torus,
+    create_box, create_cylinder, create_sphere, create_cone, create_torus, create_wedge,
 )
 from AICADAgent.cad_tools.boolean_tools import boolean_fuse, boolean_cut, boolean_common
 from AICADAgent.cad_tools.feature_tools import add_fillet, add_chamfer, cut_hole
@@ -35,6 +35,7 @@ TOOL_REGISTRY: dict = {
     "create_sphere": create_sphere,
     "create_cone": create_cone,
     "create_torus": create_torus,
+    "create_wedge": create_wedge,
     "boolean_fuse": boolean_fuse,
     "boolean_cut": boolean_cut,
     "boolean_common": boolean_common,

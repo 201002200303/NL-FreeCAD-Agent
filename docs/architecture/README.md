@@ -1,6 +1,6 @@
 # NL-FreeCAD-Agent Architecture Evolution
 
-本文档记录架构演进。**当前主路径 = Code Mode（V0.10）**。
+本文档记录架构演进。**当前主路径 = Phase Program Code Mode**，决策见 [ADR-0001](../adr/0001-agent-plans-host-governs-phase-programs.md)。
 
 | 用途 | 文档 |
 |------|------|
@@ -57,11 +57,17 @@
 
 [详细文档](./v07-architecture.md)
 
-### V0.10 - Code Mode（当前主路径）
+### V0.10 - Code Mode（已演进为 Phase Program 主路径）
 - 主入口仍为 `POST /agent/chat`，但建模动作为 `execute_cad_program`
 - 受限 Python（`cad.*`）+ AST 沙箱 + 客户端单事务
 - 53 工具退到执行器内部；圆周均布走 `polar_pattern`
 - 可选多视图 VLM；**尚无** bbox/贴合几何门禁
+
+### Phase Program Mainline（当前）
+- Agent 自主规划语义阶段，宿主管理 Phase State
+- program hash + execution key + State Diff 构成 Program Receipt
+- 确定性 Acceptance 决定阶段推进，失败只修当前阶段
+- CAD Program Manifest 与双端版本握手防止契约漂移
 
 [详细文档](../code_mode.md)
 

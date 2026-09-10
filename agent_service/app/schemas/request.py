@@ -52,6 +52,10 @@ class ChatRequest(BaseModel):
     session_memory: Optional[dict] = Field(default=None)
     name_map: dict[str, str] = Field(default_factory=dict)
     soft_plan: Optional[dict] = Field(default=None, description="客户端持有的当前 todo")
+    phase_state: Optional[dict] = Field(
+        default=None,
+        description="宿主管理的 Phase Program 状态；模型不可直接改写",
+    )
     vision_memory: Optional[dict] = Field(
         default=None,
         description="视觉主线状态：阶段验收、open_issues、本阶段修订预算",

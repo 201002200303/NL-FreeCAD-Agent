@@ -1,4 +1,6 @@
-# Development Plan - NL-FreeCAD-Agent
+# Historical Development Plan - Query-Driven Agent
+
+> 本文记录 V0.8/V0.9 的旧 query-driven 路线，不再是当前执行依据。当前唯一开发主线见 [development_mainline.md](development_mainline.md)。
 
 ## 0. 当前方向
 

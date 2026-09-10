@@ -100,6 +100,30 @@ TOOL_SPECS: dict = {
         },
         "required": ["name", "radius1", "radius2"],
     },
+    "create_wedge": {
+        "description": (
+            "[TEST] 楔形/锥台块。length/width/height→X/Y/Z；"
+            "沿 taper_axis 从全尺寸收到 tip_scale（远端相对近端）。"
+            "人工验收中，见 _tool_test_bench.cad.py。"
+        ),
+        "parameters": {
+            "name": {"type": "string", "description": "对象名称"},
+            "length": {"type": "float", "description": "X 向尺寸 (mm)"},
+            "width": {"type": "float", "description": "Y 向尺寸 (mm)"},
+            "height": {"type": "float", "description": "Z 向尺寸 (mm)"},
+            "tip_scale": {"type": "float", "default": 0.4, "description": "远端相对近端比例 (0,1]"},
+            "taper_axis": {"type": "string", "default": "Y", "description": "收窄轴 X/Y/Z"},
+            "unit": {"type": "string", "default": "mm"},
+            "pos_x": {"type": "float", "default": 0},
+            "pos_y": {"type": "float", "default": 0},
+            "pos_z": {"type": "float", "default": 0},
+            "rot_x": {"type": "float", "default": 0},
+            "rot_y": {"type": "float", "default": 0},
+            "rot_z": {"type": "float", "default": 0},
+            "anchor": {"type": "string", "default": "center", "description": "min 或 center"},
+        },
+        "required": ["name", "length", "width", "height"],
+    },
     # ── boolean ──
     "boolean_fuse": {
         "description": "布尔合并：将两个实体合并为一个 (Part::Feature)",
@@ -630,7 +654,10 @@ TOOL_SPECS: dict = {
         "required": ["name", "profiles"],
     },
     "make_sweep": {
-        "description": "扫掠：截面沿路径扫掠",
+        "description": (
+            "[TEST] 扫掠：截面沿路径扫掠 (makePipeShell)。"
+            "人工验收中，见 _tool_test_bench.cad.py。"
+        ),
         "parameters": {
             "name": {"type": "string", "description": "结果对象名"},
             "profile": {"type": "string", "description": "截面轮廓对象名"},

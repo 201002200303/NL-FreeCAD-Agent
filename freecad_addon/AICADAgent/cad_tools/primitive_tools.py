@@ -103,3 +103,105 @@ def create_torus(doc, name="Torus", radius1=20, radius2=5, unit="mm",
     torus.Label = name
     apply_placement(torus, pos_x, pos_y, pos_z, rot_x, rot_y, rot_z)
     return {"tool": "create_torus", "object": torus.Name, "label": torus.Label, "type": "Part::Torus"}
+
+
+def create_wedge(
+    doc,
+    name="Wedge",
+    length=40,
+    width=20,
+    height=10,
+    tip_scale=0.4,
+    taper_axis="Y",
+    unit="mm",
+    pos_x=0,
+    pos_y=0,
+    pos_z=0,
+    rot_x=0,
+    rot_y=0,
+    rot_z=0,
+    anchor="center",
+):
+    """[TEST] 楔形/锥台块：沿 taper_axis 从全尺寸收到 tip_scale。
+
+    length/width/height → X/Y/Z。tip_scale∈(0,1] 为远端相对近端比例。
+    """
+    import FreeCAD
+    import Part
+
+    _check_unit(unit)
+    L, W, H = float(length), float(width), float(height)
+    ts = float(tip_scale)
+    if L <= 0 or W <= 0 or H <= 0:
+        raise ValueError(f"wedge dimensions must be positive, got {L}x{W}x{H}")
+    if ts <= 0 or ts > 1:
+        raise ValueError(f"tip_scale must be in (0,1], got {tip_scale}")
+    axis = str(taper_axis or "Y").strip().upper()[:1]
+    if axis not in {"X", "Y", "Z"}:
+        raise ValueError(f"taper_axis must be X/Y/Z, got {taper_axis!r}")
+
+    def _face_yz(y, sx, sz):
+        hx, hz = sx / 2.0, sz / 2.0
+        pts = [
+            FreeCAD.Vector(-hx, y, -hz),
+            FreeCAD.Vector(hx, y, -hz),
+            FreeCAD.Vector(hx, y, hz),
+            FreeCAD.Vector(-hx, y, hz),
+        ]
+        return Part.Face(Part.makePolygon(pts + [pts[0]]))
+
+    def _face_xz(x, sy, sz):
+        hy, hz = sy / 2.0, sz / 2.0
+        pts = [
+            FreeCAD.Vector(x, -hy, -hz),
+            FreeCAD.Vector(x, hy, -hz),
+            FreeCAD.Vector(x, hy, hz),
+            FreeCAD.Vector(x, -hy, hz),
+        ]
+        return Part.Face(Part.makePolygon(pts + [pts[0]]))
+
+    def _face_xy(z, sx, sy):
+        hx, hy = sx / 2.0, sy / 2.0
+        pts = [
+            FreeCAD.Vector(-hx, -hy, z),
+            FreeCAD.Vector(hx, -hy, z),
+            FreeCAD.Vector(hx, hy, z),
+            FreeCAD.Vector(-hx, hy, z),
+        ]
+        return Part.Face(Part.makePolygon(pts + [pts[0]]))
+
+    # 局部：近端 -extent/2 全尺寸，远端 +extent/2 收 tip_scale，几何中心在原点
+    if axis == "Y":
+        y0, y1 = -W / 2.0, W / 2.0
+        f1, f2 = _face_yz(y0, L, H), _face_yz(y1, L * ts, H * ts)
+    elif axis == "X":
+        x0, x1 = -L / 2.0, L / 2.0
+        f1, f2 = _face_xz(x0, W, H), _face_xz(x1, W * ts, H * ts)
+    else:
+        z0, z1 = -H / 2.0, H / 2.0
+        f1, f2 = _face_xy(z0, L, W), _face_xy(z1, L * ts, W * ts)
+
+    solid = Part.makeLoft([f1, f2], True)
+    mode = str(anchor or "center").strip().lower()
+    if mode not in {"center", "min", "corner"}:
+        raise ValueError(f"anchor must be 'min' or 'center', got {anchor!r}")
+    if mode != "center":
+        bb = solid.BoundBox
+        solid.translate(FreeCAD.Vector(-bb.XMin, -bb.YMin, -bb.ZMin))
+        px, py, pz = float(pos_x), float(pos_y), float(pos_z)
+    else:
+        px, py, pz = float(pos_x), float(pos_y), float(pos_z)
+
+    feat = doc.addObject("Part::Feature", name)
+    feat.Label = name
+    feat.Shape = solid
+    apply_placement(feat, px, py, pz, rot_x, rot_y, rot_z)
+    return {
+        "tool": "create_wedge",
+        "object": feat.Name,
+        "label": feat.Label,
+        "type": "Part::Feature",
+        "status": "test",
+        "taper_axis": axis,
+        "tip_scale": ts,
+    }
