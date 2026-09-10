@@ -23,10 +23,13 @@
      - `cad.move(obj, dx, dy, dz)` 或 `offset=(dx,dy,dz)` / `dx=/dy=/dz=`：**相对平移**（不是绝对坐标）；兼容误写 `x/y/z=`，语义仍是相对
      - 多截面：`cad.loft(name="Main", profiles=[sk1, sk2], solid=True)`
      - `cad.rotate(obj, axis="X", angle=15, center=(x,y,z))` 或 `pivot=` / `origin=`
-   - **圆周/直线均布必须用阵列**（禁止 `for` + `cad.rotate` 手搓布齿）：
-     - `ring = cad.polar_pattern(tooth, count=12, angle=360, axis="Z", name_prefix="Tooth", fuse=True, fuse_name="ToothRing")`
-     - `row = cad.linear_pattern(bar, count=4, offset=(12,0,0), name_prefix="Bar", fuse=True, fuse_name="BarRow")`
-   - `cad.rotate` 只用于**单个对象**改朝向/绕点转一次；多实例复制一律走 pattern
+   - **重复件（齿轮齿/法兰孔/肋板/桨叶）**：按下面二选一，不要凭感觉混用
+     - 首选阵列（源对象是**刚创建、未 move/rotate 过**的干净原语）：
+       `ring = cad.polar_pattern(tooth, count=12, angle=360, axis="Z", name_prefix="Tooth", fuse=True, fuse_name="ToothRing")`
+       `row = cad.linear_pattern(bar, count=4, offset=(12,0,0), name_prefix="Bar", fuse=True, fuse_name="BarRow")`
+     - 实例位置需要按几何推导（每个实例 world center 不同，或对象已带 Placement）时：允许 `for`，但必须
+       **在循环内新建**每个实例，并各自绕自身 `rotate(center=该实例中心)`
+     - **禁止**复制同一个已有对象再逐次 `cad.rotate` 累加位姿（既啰嗦又必然丢位姿）
    - **清理/重建（强制）**：
      - 调整或替换已有部件前：先 `cad.delete("Name")` 或 `cad.delete(["A","B"])`，再创建；不要靠换 `*_Final/*_Fixed` 新名字盖住旧件
      - 同名再创建时运行时会先删再建；文档里若已有 `Name001`/`Name002` 等残留，必须显式 `cad.delete` 清掉
@@ -82,6 +85,13 @@ center / pos / 语义方向遵循该映射；禁止自创「前=+X」。
 ### 盒子
 - `cad.box(..., size=(L,W,H), center=...)`：L/W/H = 沿 X/Y/Z；`center` 已是几何中心（内部 anchor=center）
 
+### 接触与布尔（强制，易错）
+- 两个零件要 `cad.fuse` 成一体，**必须有实体重叠**；两个面**共面相切**会静默失败或产成多实体
+  （宿主看到 `solid_count > 1` 就会判验收失败）
+- 统一写法：**接触面轻嵌 1mm**。从已知面推下一层：
+  `上层底 = 已知面`，`下层顶 = 上层底 - 1mm`，`center_z = (顶 + 底) / 2`
+- 只做装饰的贴合件**不必 fuse**，留独立零件；要一体再布尔，且只布尔**没有再 move/rotate 过**的原语
+
 ## 建模策略（主体优先）
 - 复杂模型先做**主体**：优先「闭合截面 → 拉伸」；矩形棱柱可用 `cad.box` 当作最简拉伸
 - `cad.extrude` 是 Part 拉伸，**不依赖** PartDesign Body；不要把「无闭合轮廓」误判成 Body 归属问题
@@ -110,7 +120,7 @@ center / pos / 语义方向遵循该映射；禁止自创「前=+X」。
       "description": "做什么 + 为何"
     }
   ],
-  "soft_plan": {"items": [{"id": "P1", "title": "建立主体", "status": "in_progress", "acceptance": [{"type":"object_exists","target":"Main"},{"type":"valid_shape","target":"Main"}]}], "key_dims": {"unit": "mm"}},
+  "soft_plan": {"items": [{"id": "P1", "title": "建立主体", "status": "in_progress", "acceptance": [{"type":"object_exists","target":"Torso"},{"type":"valid_shape","target":"Torso"},{"type":"solid_count","target":"Torso","equals":1},{"type":"bbox_size","target":"Torso","value":[40,25,55],"tolerance":0.5}]}], "key_dims": {"unit": "mm"}},
   "status": "awaiting_tools | awaiting_user | done",
   "question": "需要澄清时填写"
 }

@@ -1,8 +1,12 @@
 """提示词集中目录加载与关键片段冒烟（仅 live chat 路径）。"""
 
+from pathlib import Path
+
 from app.design import format_design_brief
 from app.prompts import clear_cache, load_template, render
 from app.workflow import chat as chat_mod
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_all_named_templates_load():
@@ -70,6 +74,48 @@ def test_vision_on_mentions_capture_views():
     assert "cad.delete" in prompt
     assert "warn" in prompt.lower() or "细节" in prompt
     assert "询问" in prompt or "question" in prompt
+
+
+def test_chat_core_requires_contact_overlap_for_booleans():
+    """D6：相切 fuse 会静默裂成多实体，规则必须进主提示词而不是只写在 recipes。"""
+    text = load_template("chat_core")
+    assert "轻嵌" in text
+    assert "1mm" in text
+    assert "相切" in text
+
+
+def test_chat_core_pattern_rule_is_conditional_not_absolute():
+    """D5：主提示词不再绝对化，否则与 recipes 的直算写法互相打架。"""
+    text = load_template("chat_core")
+    assert "polar_pattern" in text
+    assert "未 move/rotate" in text
+    assert "循环内新建" in text
+    assert "一律走 pattern" not in text
+
+
+def test_chat_core_example_acceptance_includes_geometric_check():
+    """示例里的 acceptance 会被模型照抄，必须满足 F2 的几何检查硬约束。"""
+    text = load_template("chat_core")
+    assert '"bbox_size"' in text or '"solid_count"' in text
+
+
+def test_plan_rules_require_geometric_acceptance():
+    text = load_template("chat_plan_on")
+    assert "硬约束" in text
+    assert "几何检查" in text
+    assert "冻结" in text
+
+
+def test_recipes_and_writer_defer_to_canonical_pattern_rule():
+    """配方文档不得再写与主提示词相反的绝对规则。"""
+    recipes = (REPO_ROOT / "docs" / "cad_modeling_recipes.md").read_text(encoding="utf-8")
+    writer = (REPO_ROOT / "docs" / "cad_script_writer_prompt.md").read_text(encoding="utf-8")
+    assert "chat_core.md" in recipes
+    assert "chat_core.md" in writer
+    for text in (recipes, writer):
+        assert "不用 pattern" not in text
+        assert "必须用阵列" not in text
+        assert "禁止 `for`" not in text
 
 
 def test_brief_still_injects_user_input():

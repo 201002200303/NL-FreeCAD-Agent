@@ -16,7 +16,9 @@
    - 能 `center=` 直接算世界坐标，就先别 rotate 后再 fuse。
    - 拼装后视觉一体的组（起落架腿+滑撬），**可以留独立零件不 fuse**。
 3. **旋转后的 fuse 不是「合并视觉」**：只做装饰的贴合件不必 fuse；要一体再布尔，且只布尔**没再动过**的原语。
-4. **重复件（桨叶/对称）**：用三角函数直接算各实例的世界 center + 绕自身 `rotate`，比 `move`+`polar_pattern(fuse)` 稳。
+4. **重复件（桨叶/对称）**：规则以主提示词 `agent_service/app/prompts/chat_core.md` 的「重复件」节为准——
+   源对象干净时首选 `cad.polar_pattern` / `cad.linear_pattern`；实例坐标要按几何推导、或对象已带 Placement 时，
+   在 `for` 循环内新建每个实例并各自绕自身 `rotate(center=...)`。**禁止**复制同一个对象再逐次 rotate 累加。
 5. **动态名**：AST 校验禁 `str()`；名字列表先写死再循环取，或用 f-string。
 
 ---
@@ -88,10 +90,10 @@ cad.box(name="Leg_R2", size=(leg_xy, leg_xy, leg_h), center=(gear_x, -22, leg_cz
 
 ---
 
-## 样例 3：重复桨叶（不用 pattern，直接算世界坐标）
+## 样例 3：重复桨叶（坐标需推导 → 循环内新建）
 
-「双叶绕毂」：每个实例用 cos/sin 算世界 center，再绕自身 rotate。  
-（`polar_pattern(fuse=True)` 对已带 Placement 的对象有坑；叶片用 box 直算更稳。）
+「双叶绕毂」：每个实例用 cos/sin 算世界 center，循环内新建后再绕自身 rotate。
+这是 `chat_core.md`「重复件」第二条的样板：**对象已带 Placement 时别用 `pattern(fuse=True)`**（会丢位姿）。
 
 ```python
 # propeller blades — 每个叶片直接算世界坐标
@@ -114,7 +116,8 @@ for side, suffix in [(0, "A"), (1, "B")]:
     cad.rotate(blade, axis="Z", angle=spin + 180 * side, center=(bx, by, 27))
 ```
 
-要点：`for` 是「直接建多个独立件」，不是「for + rotate 手搓布齿」；均布齿轮仍优先 `polar_pattern`，但别在**已移动/旋转过**的对象上 fuse。
+要点：`for` 是在循环内**新建**多个独立件（各自算好的世界坐标），不是复制同一个对象再逐次 rotate 累加；
+均布齿轮/法兰孔在源对象干净时仍首选 `polar_pattern`，但别在**已移动/旋转过**的对象上 `fuse`。
 
 ---
 

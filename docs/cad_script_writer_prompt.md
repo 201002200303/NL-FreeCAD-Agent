@@ -59,7 +59,8 @@
 - 接触件按「尺寸栈」算：从已知面推下一层 `center`（下层顶 = 上层底 + 1mm overlap），不盲搬外部 `translate`。  
 - `move`/`rotate` 改的是 Placement；**旋转/移动过的对象别再 `fuse` / `pattern(fuse=True)`**（易丢位姿/双重偏移）。  
 - 纯装饰贴合件（腿+滑撬、云台件）**留独立零件不 fuse**，别硬布尔。  
-- 均布齿/孔用 `polar_pattern`；但复杂叶片/桨叶可 `for` 直接算各实例世界坐标再绕自身 `rotate`（见 recipes 样例 3）。
+- 重复件规则以 `agent_service/app/prompts/chat_core.md`「重复件」节为准：源对象干净首选 `polar_pattern`/`linear_pattern`；
+  坐标需推导或对象已带 Placement 时，在 `for` 循环内新建各实例再绕自身 `rotate`（见 recipes 样例 3）。
 
 **清理**
 
@@ -78,7 +79,8 @@
 - [ ] fuse/cut 是两参数，不是 list  
 - [ ] move 是相对位移  
 - [ ] extrude 平面与 direction 匹配；无 center=  
-- [ ] 均布用 pattern  
+- [ ] 重复件按 chat_core 二选一（干净源对象用 pattern；已带 Placement 则循环内新建）  
+- [ ] 需要成一体 fuse 的接触面轻嵌 1mm，没有共面相切  
 - [ ] 开头 delete 将创建的名字  
 - [ ] 接触件按尺寸栈算 center；旋转过的没再 fuse/pattern(fuse)  
 - [ ] 动态名字没用 `str()`（循环取名字列表）  
