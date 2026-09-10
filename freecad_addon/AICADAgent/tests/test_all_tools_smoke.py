@@ -98,7 +98,7 @@ def run_tests():
     print("All Tools Smoke Test (registry=%d)" % len(TOOL_REGISTRY))
     print("=" * 60)
 
-    check("registry_count", len(TOOL_REGISTRY) == 54, "got %d" % len(TOOL_REGISTRY))
+    check("registry_count", len(TOOL_REGISTRY) >= 54, "got %d" % len(TOOL_REGISTRY))
 
     # ── primitives ──
     run("create_box", {"name": "BoxA", "length": 40, "width": 30, "height": 20})
@@ -109,6 +109,10 @@ def run_tests():
     })
     run("create_torus", {
         "name": "TorA", "radius1": 15, "radius2": 3, "pos_x": 180,
+    })
+    run("create_wedge", {
+        "name": "WedgeA", "length": 30, "width": 20, "height": 15,
+        "tip_scale": 0.4, "taper_axis": "Y", "pos_x": 220,
     })
 
     # ── boolean ──

@@ -1,5 +1,22 @@
 # Development Log
 
+## 2026-09-10: 质量整改 F1–F8（分支 fix/review-hardening，不并主线）
+
+**因**: 审查见 `docs/quality_review_action_plan.md`（D1–D14）。治愈点：门闩可绕、验收由被审模型自定、无 L3/L4 几何门禁、契约双源、握手失败即永久阻断、提示词互相矛盾、错误不可修复、曲面 bbox 近似。
+
+**改**:
+1. **F1 门闩**: `orchestrator.reconcile_soft_plan` 恒以宿主计划为权威，新增 `mark_current_phase`；`chat.py` 删自洽 reconcile，`done` 需宿主全 passed。
+2. **F2 验收**: 进阶段即把 `acceptance` 冻结进 `phase_state`（只可追加），计划阶段必须有几何检查，否则不 PASS。
+3. **F3 几何 Oracle**: 新建 `tests/geometry_oracle/`（18 用例 L3/L4）+ `test_geometry_oracle.py` 无 FreeCAD 门禁；发现曲面 `Shape.BoundBox` 偏大，新增 `geometry_facts.exact_bbox`（`optimalBoundingBox`）替换 6 处取 bbox。
+4. **F4 契约单一源**: `app/cad_program/manifest.py` 为唯一源，`scripts/sync_cad_manifest.py` 生成/校验插件副本；executor 热加载 manifest；版本 `1.1`；wedge/sweep 移出模型可见目录（工具本体保留）。
+5. **F5 握手**: 新增 `AICADAgent/capabilities.py`（无 FreeCAD 依赖）；执行门 `is False`，未知即放行；探测失败保持未知并按退避重试。
+6. **F6 提示词**: `chat_core.md` 为唯一规则源——重复件按「干净源对象用 pattern / 已带 Placement 循环内新建」二选一；布尔接触统一「轻嵌 1mm」；配方与 writer 文档改为引用，不再自定相反规则。
+7. **F7 布尔**: 两端 runtime 支持 N 操作数（位置参或列表）按序折叠；单/空操作数在调用前报 `cad.<api>` + 实收参数 + 正确写法；handler 报错包装成可修复提示。
+8. **F8 卫生**: 删根目录 `test.py`、`prompts_test_robot*`；`.gitignore` 加 `.qoder/`；修 v06 重复 copy 撞名与 registry 精确计数断言；冒烟补 `create_wedge`；新增 server/plugin runtime 漂移守卫测试。
+
+**验**: pytest 166 passed；FreeCADCmd —— smoke 109/0、v06 14/0、oracle 18/0、cad_program_samples 7/0。
+**注**: 改动均提交在 `fix/review-hardening`，未并入 dev/main。
+
 ## 2026-08-06: 整测台视觉修正（用户「不对哦」）
 
 **因**: 把手折成 L（折线 makeTube 多段 fuse 丢段）、草图黑线叠影、fillet 竖棱选边炸脚本。

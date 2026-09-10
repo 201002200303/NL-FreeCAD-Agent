@@ -89,9 +89,9 @@ def run_tests():
     }))
     check("cut_hole", r.get("status") == "success", r)
 
-    # mirror 已从 TOOL_REGISTRY 移除；对称改对侧 create
+    # mirror 已从 TOOL_REGISTRY 移除；对称件改 copy 到新名字（不能复用 s7 的 BallCopy）
     r = ex.execute_step(_step("s11", "copy_object", {
-        "target": "Ball", "name": "BallCopy",
+        "target": "Ball", "name": "BallMirror",
     }))
     check("copy_object", r.get("status") == "success", r)
 
@@ -110,8 +110,8 @@ def run_tests():
     }))
     check("export_stl", r.get("status") == "success" and os.path.exists(stl_path), r)
 
-    # Registry completeness
-    check("registry_count", len(TOOL_REGISTRY) == 54, f"got {len(TOOL_REGISTRY)}")
+    # Registry completeness（只保证不下线，不锁死精确数量，避免加工具就红）
+    check("registry_count", len(TOOL_REGISTRY) >= 54, f"got {len(TOOL_REGISTRY)}")
 
     print()
     print(f"Results: {passed} passed, {failed} failed")

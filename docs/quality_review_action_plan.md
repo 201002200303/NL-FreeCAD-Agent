@@ -90,13 +90,23 @@
 - 验收测试：`test_prompts.py`（关键规则存在且无互斥表述）。
 
 ### F7 — 错误可修复化（D7）`[x]`
-- 改法：`_normalize_cad_args` 支持 `cad.fuse([a,b,c])` / `cad.cut(base, [tools])`；
-  错误返回带「出错参数 + 建议改法」。
-- 验收测试：`test_cad_runtime.py`（列表 fuse / 错误 hint）。
+- 症状：`cad.fuse([a,b,c])` 报底层 `a string or integer is required`；`cad.fuse(a,b,c)` 第 3 个操作数被静默丢弃。
+- 改法：布尔 API 接受 N 个操作数（位置参数或列表，兼容 `base=`/`tool=`），按顺序两两折叠，
+  中间件在下次布尔时被删；单操作数/空操作数在调用前报出 `cad.<api>` + 实收参数 + 正确写法；
+  handler 抛错时包装为「api + base/tool + 原因 + 建议」。
+- 验收测试：`test_cad_runtime.py`（列表 fuse 折叠 / 多位置操作数不丢 / 单操作数带 hint 报错）。
+  **结果：15 passed，全量 165 passed**；服务端与插件两份 runtime 除 import 前缀外逐字一致。
 
-### F8 — 仓库卫生与测试完整性（D12/D14）`[ ]`
-- 改法：删根目录无关文件与临时产物；WIP 先落基线 commit；整改按 F1–F7 分步提交到 `fix/review-hardening`；
-  修掉过时断言（v06 `registry_count == 54`）与冒烟覆盖缺口（`create_wedge`）。不并入 `dev`/`main`。
+### F8 — 仓库卫生与测试完整性（D12/D14）`[x]`
+- 改法：根目录无关文件（`test.py`、`prompts_test_robot*`）已删、`.qoder/` 入 `.gitignore`、WIP 落基线 commit `c6f8b7d`；
+  v06 的 `registry_count == 54` 改为 `>= 54`（去精确计数脆性），并修 s11 复用 `BallCopy` 的撞名失败；
+  冒烟补 `create_wedge` 用例，`all_registry_tools_invoked` 恢复通过；
+  新增 `test_server_and_plugin_runtime_stay_in_sync` 守卫两端 runtime 漂移。
+- 验收：pytest **166 passed**；FreeCADCmd 冒烟 **109/0**、v06 **14/0**、oracle **18/0**、cad_program_samples **7/0**。
+- 分支 `fix/review-hardening` 已提交 F1–F8，**未并入 `dev`/`main`**。
+
+> 更正：D14 说 v06 的 `registry_count == 54` 已过时——实测注册表仍是 54 项，
+> 真正问题是「精确计数」使新增工具即红，故改为下界断言；`create_wedge` 未覆盖属实（已补）。
 
 ## 执行纪律
 
