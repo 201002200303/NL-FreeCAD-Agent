@@ -5,6 +5,20 @@ from __future__ import annotations
 from typing import Any, Optional
 
 
+# 只有这些检查能约束几何事实；仅靠 object_exists / valid_shape 的阶段不算验收。
+GEOMETRIC_CHECK_TYPES = frozenset(
+    {"bbox_size", "bbox_center", "volume_range", "solid_count"}
+)
+
+
+def has_geometric_check(checks: Any) -> bool:
+    return any(
+        str(check.get("type") or "") in GEOMETRIC_CHECK_TYPES
+        for check in (checks or [])
+        if isinstance(check, dict)
+    )
+
+
 def _as_dict(value: Any) -> dict:
     if value is None:
         return {}

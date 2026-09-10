@@ -41,9 +41,12 @@
 
 ### F2 — 宿主锁定验收（D1）`[x]`
 - 症状：模型可放宽/替换/清空 acceptance 后让阶段 PASS。
-- 改法：进入当前阶段时由宿主把 `phase_id + acceptance` 冻结进 `phase_state`；
-  后续同阶段只允许**追加**检查，禁止移除或放宽；空 acceptance 视为不合格不予 PASS。
-- 验收测试：`test_phase_program.py`（放宽被拒 / 追加允许 / 空检查不 PASS）。
+- 改法：进入当前阶段时宿主把 `acceptance` 冻结进 `phase_state`，之后只允许**追加**（`lock_acceptance` 取并集、
+  锁定项逐字保留，因此无法放宽 tolerance 或删检查）；计划阶段必须至少有一条几何检查
+  （`bbox_size`/`bbox_center`/`volume_range`/`solid_count`），否则不予 PASS（仅 `ad_hoc` 退回默认检查）；
+  `chat_plan_on.md` 同步写明该硬约束与冻结语义。
+- 验收测试：`test_phase_program.py`（冻结进 state / 放宽被拒 / 追加允许 / tolerance 不可放宽 /
+  无 acceptance 不 PASS / 无几何检查不 PASS / ad_hoc 仍走默认检查）。**结果：24 passed，全量 136 passed**。
 
 ### F3 — L3/L4 几何 Oracle 骨架（D4）`[x]`
 - 症状：Placement/朝向类缺陷无自动门禁。

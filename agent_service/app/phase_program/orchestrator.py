@@ -4,10 +4,24 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from app.phase_program.acceptance import evaluate_acceptance, normalize_acceptance
+from app.phase_program.acceptance import (
+    evaluate_acceptance,
+    has_geometric_check,
+    normalize_acceptance,
+)
+
+_ACCEPTANCE_ERROR_EMPTY = (
+    "phase declares no structured acceptance; add at least one geometric check "
+    "(bbox_size / bbox_center / volume_range / solid_count)"
+)
+_ACCEPTANCE_ERROR_WEAK = (
+    "phase acceptance lacks a geometric check "
+    "(bbox_size / bbox_center / volume_range / solid_count)"
+)
 
 
 @dataclass(frozen=True)
@@ -70,6 +84,29 @@ def _set_phase_outcome(plan: Optional[dict], phase_id: str, passed: bool) -> Opt
     return updated
 
 
+def _acceptance_key(check: dict) -> str:
+    return json.dumps(check, ensure_ascii=False, sort_keys=True)
+
+
+def lock_acceptance(locked: Any, proposed: Any) -> list[dict]:
+    """Host-owned acceptance: locked checks survive; the Agent may only add.
+
+    Relaxing a locked check is impossible because the locked version is always
+    kept verbatim and every check is required to pass.
+    """
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for check in list(locked or []) + list(proposed or []):
+        if not isinstance(check, dict) or not check.get("type"):
+            continue
+        key = _acceptance_key(check)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(dict(check))
+    return merged
+
+
 def prepare_phase_tool_calls(
     tool_calls: list[dict],
     *,
@@ -77,12 +114,13 @@ def prepare_phase_tool_calls(
     soft_plan: Optional[dict],
     phase_state: Optional[dict],
 ) -> tuple[list[dict], dict]:
-    """Attach host-owned identity and plan acceptance to CAD program calls."""
+    """Attach host-owned identity and locked acceptance to CAD program calls."""
     prepared: list[dict] = []
     state = dict(phase_state or {})
     current = _current_phase(soft_plan) or {}
     phase_id = _phase_id(current) or str(state.get("phase_id") or "ad_hoc")
-    acceptance = normalize_acceptance(current.get("acceptance"))
+    locked = state.get("acceptance") if str(state.get("phase_id") or "") == phase_id else None
+    acceptance = lock_acceptance(locked, normalize_acceptance(current.get("acceptance")))
 
     for call in tool_calls or []:
         if not isinstance(call, dict) or call.get("tool") != "execute_cad_program":
@@ -108,6 +146,7 @@ def prepare_phase_tool_calls(
             "attempt": int(state.get("attempt") or 0) + 1,
             "program_hash": digest,
             "execution_key": execution_key,
+            "acceptance": acceptance,
             "checks": [],
             "error": None,
         }
@@ -157,9 +196,31 @@ def reduce_phase_feedback(
     acceptance = normalize_acceptance(args.get("acceptance"))
     produced = [str(name) for name in (result.get("produced_objects") or []) if name]
     state_diff = result.get("state_diff") or {}
+    planned_phase = phase_id != "ad_hoc"
+
+    # 计划阶段必须有结构化验收；只有 ad_hoc 才退回默认检查。
+    if planned_phase and not acceptance:
+        state = {**base, "status": "failed", "checks": [], "error": _ACCEPTANCE_ERROR_EMPTY}
+        return PhaseReduction(
+            _set_phase_outcome(soft_plan, phase_id, False), state, format_phase_feedback(state)
+        )
+
     checks = acceptance or _default_checks(produced, state_diff)
     evaluated = evaluate_acceptance(checks, document_state, state_diff=state_diff)
     passed = bool(evaluated) and all(check.get("passed") for check in evaluated)
+
+    # 仅存在性/有效性检查不足以证明几何；拒绝靠弱验收推进阶段。
+    if passed and planned_phase and not has_geometric_check(checks):
+        state = {
+            **base,
+            "status": "failed",
+            "checks": evaluated,
+            "error": _ACCEPTANCE_ERROR_WEAK,
+        }
+        return PhaseReduction(
+            _set_phase_outcome(soft_plan, phase_id, False), state, format_phase_feedback(state)
+        )
+
     state = {
         **base,
         "status": "passed" if passed else "failed",

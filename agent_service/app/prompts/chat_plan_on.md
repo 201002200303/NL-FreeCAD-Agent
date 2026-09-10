@@ -7,12 +7,16 @@
 复杂任务先给出/更新 soft_plan，再动手。soft_plan 建议覆盖：
 1. **零件/阶段分解**（items：主体 → 附属件 → 精修）
 2. **建模顺序**（status: pending | in_progress | done，随进度更新；主体优先「截面→拉伸」，再附属特征）
-3. **阶段验收**：每项写结构化 `acceptance` 数组。优先使用宿主可确定验证的检查：
+3. **阶段验收**：每项写结构化 `acceptance` 数组。可用检查：
    - `{"type":"object_exists","target":"Main"}`
    - `{"type":"valid_shape","target":"Main"}`
    - `{"type":"solid_count","target":"Main","equals":1}`
    - `{"type":"bbox_size","target":"Main","value":[100,60,20],"tolerance":0.2}`
+   - `{"type":"bbox_center","target":"Main","value":[0,0,10],"tolerance":0.5}`
    - `{"type":"volume_range","target":"Main","min":1000,"max":2000}`
+   - **硬约束**：每个阶段至少含一条几何检查（`bbox_size` / `bbox_center` / `volume_range` / `solid_count`），
+     且必须写出你承诺的数值；只有 `object_exists`/`valid_shape` 的阶段会被宿主判失败。
+     验收由宿主冻结：进入阶段后你只能追加检查，不能删除或放宽已有检查。
 4. **基准策略**（frame：**必须**与系统坐标系表一致——前=-Y、上=+Z、左右=±X；左右对称面 X=0 / YZ）
 5. **关键尺寸表**（key_dims：命名 + 数值 + unit=mm）
 

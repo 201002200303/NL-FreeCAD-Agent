@@ -4,6 +4,7 @@ from app.phase_program import (
     reconcile_soft_plan,
     reduce_phase_feedback,
 )
+from app.phase_program.acceptance import evaluate_acceptance
 from app.schemas.request import ChatRequest
 from app.schemas.response import ChatResponse
 
@@ -226,6 +227,132 @@ def test_mark_current_phase_marks_passed_phase_done():
     marked = mark_current_phase(plan, {"phase_id": "P1", "status": "passed"})
 
     assert marked["items"][0]["status"] == "done"
+
+
+def _success_receipt(call):
+    return [
+        {
+            "tool_call": call,
+            "execution_result": {
+                "status": "success",
+                "tool": "execute_cad_program",
+                "produced_objects": ["Main"],
+                "program_hash": (call.get("args") or {}).get("program_hash"),
+                "execution_key": (call.get("args") or {}).get("execution_key"),
+                "state_diff": {"changed": True, "added": ["Main"], "removed": [], "modified": []},
+            },
+        }
+    ]
+
+
+def _prepare(plan, phase_state=None):
+    return prepare_phase_tool_calls(
+        [{"call_id": "T1", "tool": "execute_cad_program", "args": {"code": "pass"}}],
+        session_id="S1",
+        soft_plan=plan,
+        phase_state=phase_state,
+    )
+
+
+def test_prepare_freezes_acceptance_into_phase_state():
+    calls, state = _prepare(_plan())
+
+    assert state["acceptance"] == _plan()["items"][0]["acceptance"]
+    assert calls[0]["args"]["acceptance"] == state["acceptance"]
+
+
+def test_agent_cannot_relax_locked_acceptance():
+    _, waiting = _prepare(_plan())
+    weakened = _plan()
+    weakened["items"][0]["acceptance"] = [{"type": "object_exists", "target": "Main"}]
+
+    calls, state = _prepare(weakened, waiting)
+
+    types = {check["type"] for check in state["acceptance"]}
+    assert {"valid_shape", "solid_count", "bbox_size"} <= types
+    assert {"valid_shape", "solid_count", "bbox_size"} <= {
+        check["type"] for check in calls[0]["args"]["acceptance"]
+    }
+
+
+def test_agent_can_add_acceptance_but_not_drop_locked_checks():
+    _, waiting = _prepare(_plan())
+    extended = _plan()
+    extended["items"][0]["acceptance"] = [
+        {"type": "object_exists", "target": "Main"},
+        {"type": "volume_range", "target": "Main", "min": 100000, "max": 150000},
+    ]
+
+    _, state = _prepare(extended, waiting)
+
+    types = [check["type"] for check in state["acceptance"]]
+    assert "volume_range" in types
+    assert "bbox_size" in types and "solid_count" in types
+
+
+def test_relaxed_tolerance_cannot_override_locked_check():
+    _, waiting = _prepare(_plan())
+    relaxed = _plan()
+    relaxed["items"][0]["acceptance"] = [
+        {"type": "bbox_size", "target": "Main", "value": [100, 60, 20], "tolerance": 50.0}
+    ]
+
+    _, state = _prepare(relaxed, waiting)
+
+    tolerances = [
+        check["tolerance"]
+        for check in state["acceptance"]
+        if check["type"] == "bbox_size"
+    ]
+    assert 0.1 in tolerances
+    evaluated = evaluate_acceptance(state["acceptance"], _document())
+    assert any(not check["passed"] for check in evaluated) or all(
+        check["passed"] for check in evaluated
+    )
+    strict = [c for c in evaluated if c["type"] == "bbox_size" and c["tolerance"] == 0.1]
+    assert strict and strict[0]["passed"] is True
+
+
+def test_phase_without_acceptance_cannot_pass():
+    plan = _plan()
+    plan["items"][0]["acceptance"] = []
+    calls, waiting = _prepare(plan)
+
+    reduced = reduce_phase_feedback(plan, _success_receipt(calls[0]), _document(), waiting)
+
+    assert reduced.phase_state["status"] == "failed"
+    assert "acceptance" in (reduced.phase_state["error"] or "")
+    assert reduced.soft_plan["items"][0]["status"] == "in_progress"
+
+
+def test_phase_without_geometric_check_cannot_pass():
+    plan = _plan()
+    plan["items"][0]["acceptance"] = [{"type": "object_exists", "target": "Main"}]
+    calls, waiting = _prepare(plan)
+
+    reduced = reduce_phase_feedback(plan, _success_receipt(calls[0]), _document(), waiting)
+
+    assert reduced.phase_state["status"] == "failed"
+    assert "geometric" in (reduced.phase_state["error"] or "")
+
+
+def test_ad_hoc_phase_keeps_default_checks():
+    """没有 soft_plan 的临时建模不因新规被卡死。"""
+    calls = [
+        {
+            "call_id": "T1",
+            "tool": "execute_cad_program",
+            "args": {"code": "pass", "phase_id": "ad_hoc", "acceptance": []},
+        }
+    ]
+    reduced = reduce_phase_feedback(
+        None,
+        _success_receipt(calls[0]),
+        _document(),
+        {"phase_id": "ad_hoc", "status": "awaiting_execution", "attempt": 1},
+    )
+
+    assert reduced.phase_state["status"] == "passed"
 
 
 def test_phase_state_round_trips_through_chat_schemas():
