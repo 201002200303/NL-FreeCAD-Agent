@@ -17,6 +17,7 @@ from PySide import QtCore, QtGui
 from AICADAgent.document_state import get_document_state
 from AICADAgent.executor import CadToolExecutor
 from AICADAgent.debug_settings import is_debug_mode
+from AICADAgent.http_errors import describe_http_failure
 from AICADAgent.session_memory import SessionMemory
 from AICADAgent.viewport import (
     DEFAULT_VIEWS,
@@ -106,7 +107,8 @@ class HTTPWorker(QtCore.QThread):
                 result = json.loads(resp.read().decode("utf-8"))
                 self.request_completed.emit(result)
         except Exception as e:
-            self.request_failed.emit(str(e))
+            # 服务没起来时 str(e) 只有一句 WinError，用户无法自诊；翻译成能照做的提示
+            self.request_failed.emit(describe_http_failure(e, base_url=AGENT_BASE_URL))
 
 
 class AgentRunner(QtCore.QObject):

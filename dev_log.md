@@ -1,5 +1,18 @@
 # Development Log
 
+## 2026-09-10: 修「WinError 10061 服务拒连」报错不可读
+
+**因**: 用户在面板发「创建一个人形的高达模型」→ `<urlopen error [WinError 10061] 由于目标计算机积极拒绝，无法连接。>`。
+根因是 **Agent 服务没启动**（8765 无监听），但报错原样透传，用户无法自诊。
+
+**改**: 新增 `AICADAgent/http_errors.py::describe_http_failure`（无 FreeCAD/Qt 依赖），
+`HTTPWorker` 失败时不再 `emit(str(e))`，改为翻译成「原因 + 怎么修」：
+- 拒连（含 WinError 10061，urllib 会包在 `URLError.reason`）→ 报「服务未启动」+ 完整启动命令
+- 超时 → 提示复杂模型较慢、可重试，不误导成配置错误
+- 域名解析失败 / 连接被中断 / HTTP 状态码 → 各自说明
+**验**: `test_client_http_errors.py`（6 项，含「不得出现 urlopen error 原文」与 runner 源码守卫）；
+真连死端口复现原始异常并确认文案；pytest 173 passed。
+
 ## 2026-09-10: 切换 LLM/Vision 到 DeepSeek `deepseek-flash`（多模态已实测）
 
 **因**: 换用 `https://api.deepseek.com` + `deepseek-flash`。先探针验证再落地。
