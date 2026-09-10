@@ -3,6 +3,7 @@
 import Part
 
 from AICADAgent.cad_tools._helpers import apply_placement
+from AICADAgent.geometry_facts import exact_bbox
 
 _SUPPORTED_UNITS = {"mm", ""}
 
@@ -186,7 +187,7 @@ def create_wedge(
     if mode not in {"center", "min", "corner"}:
         raise ValueError(f"anchor must be 'min' or 'center', got {anchor!r}")
     if mode != "center":
-        bb = solid.BoundBox
+        bb = exact_bbox(solid)
         solid.translate(FreeCAD.Vector(-bb.XMin, -bb.YMin, -bb.ZMin))
         px, py, pz = float(pos_x), float(pos_y), float(pos_z)
     else:

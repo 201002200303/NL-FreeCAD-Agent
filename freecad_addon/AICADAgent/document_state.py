@@ -2,6 +2,8 @@
 
 import FreeCAD
 
+from AICADAgent.geometry_facts import exact_bbox
+
 _SKIP_TYPE_IDS = frozenset({
     "App::Origin", "App::Line", "App::Plane", "App::Point",
 })
@@ -130,15 +132,17 @@ def _bbox_to_dict(bbox) -> dict | None:
 def _extract_bbox(obj) -> dict | None:
     """Extract world-space bounding box (includes placement/rotation).
 
+    Uses exact_bbox (optimalBoundingBox) because the acceptance checks and the
+    Agent both read this value, and Shape.BoundBox inflates curved solids.
     Part::Feature / loft / PartDesign objects may fail on obj.getBoundBox()
-    even when Shape.BoundBox is valid (list_topology already proves this path).
-    Try Shape.BoundBox first, then transformed copy, then obj.getBoundBox().
+    even when the Shape bbox is valid (list_topology already proves this path).
+    Try the shape bbox first, then a transformed copy, then obj.getBoundBox().
     """
-    # 1) Direct Shape.BoundBox — same source list_topology uses successfully
+    # 1) Direct shape bbox — same source list_topology uses successfully
     try:
         shape = obj.Shape
         if shape is not None and not (hasattr(shape, "isNull") and shape.isNull()):
-            result = _bbox_to_dict(shape.BoundBox)
+            result = _bbox_to_dict(exact_bbox(shape))
             if result is not None:
                 return result
     except Exception:
@@ -155,7 +159,7 @@ def _extract_bbox(obj) -> dict | None:
             )
             shape_w = shape.copy()
             shape_w.transformShape(placement.toMatrix())
-            result = _bbox_to_dict(shape_w.BoundBox)
+            result = _bbox_to_dict(exact_bbox(shape_w))
             if result is not None:
                 return result
     except Exception:

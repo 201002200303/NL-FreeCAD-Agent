@@ -3,6 +3,7 @@
 import FreeCAD
 
 from AICADAgent.cad_tools._helpers import get_object, get_shape, get_world_shape, remove_objects
+from AICADAgent.geometry_facts import exact_bbox
 
 
 def move(doc, target="", dx=0, dy=0, dz=0):
@@ -60,7 +61,7 @@ def scale(doc, target="", scale_x=1, scale_y=1, scale_z=1, result_name=None):
     obj = get_object(doc, target)
     # Must copy first: parametric Shape (Part::Sphere etc.) is immutable in FC 1.1+
     shape = get_shape(obj).copy()
-    center = shape.BoundBox.Center
+    center = exact_bbox(shape).Center
 
     if abs(sx - sy) < 1e-12 and abs(sy - sz) < 1e-12:
         scaled = shape.scale(sx, center)

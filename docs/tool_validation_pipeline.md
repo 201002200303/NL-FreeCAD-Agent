@@ -33,10 +33,29 @@ L4 cad.* 编排路径     FreeCADCmd：经 runtime 映射，不直调 TOOL_REGIS
 2) python agent_service/test_cad_contract_manifest.py   # 或 pytest 子集
 3) python scripts/verify_tool_fixes.py                  # 无 FC 的静态修复检查
 4) FreeCADCmd → test_all_tools_smoke.py                 # L2
-5) FreeCADCmd → tests/geometry_oracle/…                 # L3（待建）
-6) FreeCADCmd → tests/cad_path_oracle/…                 # L4（待建，可复用 probe）
+5) FreeCADCmd → tests/geometry_oracle/runner.py          # L3 + L4（已建，同一张表用 layer 区分）
 → 汇总 JSON/Markdown 报告：哪层、哪工具、期望 vs 实测
 ```
+
+**已实现（2026-09-10）**：`freecad_addon/AICADAgent/tests/geometry_oracle/`
+
+```text
+cases.py    用例表（纯 Python）：L3=直调 TOOL_REGISTRY，L4=execute_cad_program
+oracle.py   期望 schema + 比较逻辑（纯 Python，无 FreeCAD）
+runner.py   读真实 Shape 事实、跑用例、写 agent_service/data/_geometry_oracle_report.{json,md}
+```
+
+跑法（FreeCADCmd；无它则跳过，报告标 `SKIPPED_NO_FREECAD`）：
+
+```powershell
+D:\freecad\bin\freecadcmd.exe -c "import sys; sys.path.insert(0, r'<repo>\freecad_addon\AICADAgent\tests\geometry_oracle'); import runner; raise SystemExit(runner.main())"
+```
+
+用例表现状：18 条覆盖 box anchor / cylinder 默认轴与 rot_x,rot_y / cone / rotate 默认与自转 pivot /
+hole 轴 / fuse / cut / polar,linear pattern / sketch+extrude 方向 / torus 轴。全绿。
+
+pytest 侧有 FreeCAD-free 门禁 `agent_service/test_geometry_oracle.py`：校验用例 schema、
+期望值不写错、L4 程序过 AST 沙箱、比较逻辑对错样本都判对。
 
 本机无 `FreeCADCmd` 时：L0–L1 仍必须绿；L2–L4 标记 `SKIPPED_NO_FREECAD`，不得假装通过。
 
@@ -105,6 +124,12 @@ tool + args
 3. 禁止用 LLM 生成期望值当真理。
 
 **探针雏形**：`_probe_rotate.py` / `_probe_placement.py` —— 应升级为可断言、可汇总的 Oracle，而不是手工看 print。
+
+**首个 Oracle 战果（2026-09-10）**：`Shape.BoundBox` 对曲面是近似值——torus R20/r5 报 54.12（真实 50，+8.2%），
+而 `document_state` 把它当作验收 `bbox_size` 与对齐基准。已引入唯一来源
+`AICADAgent/geometry_facts.py::exact_bbox`（优先 `optimalBoundingBox()`，世界坐标且紧致），
+替换 `document_state` / `query_tools` / `placement_tools` / `transform_tools` / `_helpers` 中的取 bbox 处。
+回归：oracle 18/18、placement/pattern/cad_program_samples 全绿。
 
 ### L4 — 走 `cad.*` 路径（防映射层偷换参数）
 

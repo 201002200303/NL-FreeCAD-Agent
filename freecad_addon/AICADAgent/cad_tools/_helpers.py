@@ -8,6 +8,8 @@
 import math
 import FreeCAD
 
+from AICADAgent.geometry_facts import exact_bbox
+
 
 TOL = 1e-3
 
@@ -155,7 +157,7 @@ def _classify_edge(edge):
 
 def analyze_topology(shape) -> dict:
     """Return structured topology info for LLM / list_topology tool."""
-    bb = shape.BoundBox
+    bb = exact_bbox(shape)
     z_min, z_max = bb.ZMin, bb.ZMax
     y_min, y_max = bb.YMin, bb.YMax
     x_min, x_max = bb.XMin, bb.XMax
@@ -274,7 +276,7 @@ def select_edges(shape, edge_selector: str = "all", face_selector: str = None):
     if edge_selector == "all":
         return shape_edges
 
-    bb = shape.BoundBox
+    bb = exact_bbox(shape)
 
     if edge_selector == "top":
         z_max = bb.ZMax

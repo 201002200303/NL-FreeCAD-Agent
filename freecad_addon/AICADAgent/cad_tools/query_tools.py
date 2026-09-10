@@ -2,6 +2,7 @@
 
 from AICADAgent.cad_tools._helpers import get_object, get_shape, analyze_topology
 from AICADAgent.document_state import _extract_object_state
+from AICADAgent.geometry_facts import exact_bbox
 
 
 def list_topology(doc, target=""):
@@ -113,9 +114,9 @@ def get_object_detail(doc, target=""):
 
 
 def _object_bbox(obj):
-    """BoundBox via Shape (FC 1.1+ PrimitivePy has no getBoundBox)."""
+    """Tight bbox via Shape (FC 1.1+ PrimitivePy has no getBoundBox)."""
     try:
-        return get_shape(obj).BoundBox
+        return exact_bbox(get_shape(obj))
     except Exception:
         pass
     if hasattr(obj, "getBoundBox"):

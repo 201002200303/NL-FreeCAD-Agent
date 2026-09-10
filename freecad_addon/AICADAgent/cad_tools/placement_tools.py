@@ -3,13 +3,14 @@
 import FreeCAD
 
 from AICADAgent.cad_tools._helpers import get_object, get_shape
+from AICADAgent.geometry_facts import exact_bbox
 
 
 def _world_bbox(obj):
-    """Return Shape.BoundBox (world geometry); fallback to getBoundBox()."""
+    """Return tight world bbox; fallback to getBoundBox()."""
     try:
         shape = get_shape(obj)
-        return shape.BoundBox
+        return exact_bbox(shape)
     except Exception:
         pass
     return obj.getBoundBox()

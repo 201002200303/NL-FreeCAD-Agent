@@ -25,6 +25,8 @@
 | D10 | P2 | 记忆层四套并行，规则三处重复 | 客户端 `session_memory.py` + 服务端 `memory/pack_builder.py` + `runtime/*` + `conversation/*`；朝向规则在 `chat_core.md` / `memory/prompt.py` / `llm_provider._build_document_context` |
 | D11 | P2 | 无评测集、无 CI，「效果」无法度量 | 无 `.github`；`development_mainline.md` 自列「评测集」为待办 |
 | D12 | P2 | 仓库脏：主线未提交、根目录无关文件、诊断产物 | 11 commits / 57 dirty；根目录 `test.py`（LeetCode）；`prompts_test_robot*.{txt,json}` |
+| D13 | P1 | 曲面 bbox 用了近似值，污染验收与对齐 | `Shape.BoundBox` 对 torus R20/r5 报 54.12（真实 50）；`document_state.py:141` 用它作验收 `bbox_size`。由 F3 Oracle 实测发现 |
+| D14 | P2 | 遗留测试断言过时/覆盖缺口 | `test_v06_freecad_tools.py` 断言 `registry_count == 54`；`test_all_tools_smoke.py` 未覆盖 `create_wedge` |
 
 ## 行动项与状态
 
@@ -51,9 +53,17 @@
 ### F3 — L3/L4 几何 Oracle 骨架（D4）`[x]`
 - 症状：Placement/朝向类缺陷无自动门禁。
 - 改法：新建 `freecad_addon/AICADAgent/tests/geometry_oracle/`：
-  用例表（tool + args + 期望 bbox/轴/体积）+ runner（FreeCADCmd 执行，产出 JSON/Markdown 报告），
-  无 FreeCAD 时标记 `SKIPPED_NO_FREECAD` 而非假装通过；覆盖高风险族（box anchor、cylinder rot、rotate pivot、hole axis、pattern、sketch/extrude direction、boolean）。
-- 验收测试：骨架自检可在无 FreeCAD 下跑（解析/汇总逻辑），有 FreeCADCmd 时出实测报告。
+  `cases.py`（18 条用例，L3 直调 registry / L4 走 `cad.*`，期望 bbox/中心/轴/体积/solid 数，
+  每条注明 FreeCAD 出处）+ `oracle.py`（纯 Python 比较逻辑与 schema 校验）+ `runner.py`
+  （读真实 Shape 事实、写 `agent_service/data/_geometry_oracle_report.{json,md}`）；
+  覆盖 box anchor、cylinder 默认轴与 rot_x/rot_y、cone、rotate 默认/自转 pivot、hole 轴、
+  fuse、cut、polar/linear pattern、sketch+extrude 方向、torus 轴。
+- 验收测试：`agent_service/test_geometry_oracle.py`（FreeCAD-free 门禁：schema、AST 沙箱、
+  比较逻辑对错样本、覆盖率族齐全）；FreeCADCmd 实跑 18/18。
+- **Oracle 战果**：发现并修复 D13 —— `Shape.BoundBox` 对曲面近似（torus R20/r5 报 54.12 vs 真实 50），
+  而 `document_state` 用它做验收 `bbox_size` 与对齐基准。新增唯一来源 `geometry_facts.exact_bbox`
+  （优先 `optimalBoundingBox()`，已验证世界坐标），替换 6 处取 bbox。
+  回归：oracle 18/18、placement/pattern/cad_program_samples 全绿、pytest 146 passed。
 
 ### F4 — cad 契约单一源（D8）`[x]`
 - 改法：`agent_service/app/cad_program/manifest.py` 为唯一源，插件副本由脚本生成/校验；
@@ -74,9 +84,9 @@
   错误返回带「出错参数 + 建议改法」。
 - 验收测试：`test_cad_runtime.py`（列表 fuse / 错误 hint）。
 
-### F8 — 仓库卫生与提交（D12）`[x]`
-- 改法：删根目录无关文件与临时产物；WIP 先落基线 commit；整改按 F1–F7 分步提交到 `fix/review-hardening`。
-- 不并入 `dev`/`main`。
+### F8 — 仓库卫生与测试完整性（D12/D14）`[ ]`
+- 改法：删根目录无关文件与临时产物；WIP 先落基线 commit；整改按 F1–F7 分步提交到 `fix/review-hardening`；
+  修掉过时断言（v06 `registry_count == 54`）与冒烟覆盖缺口（`create_wedge`）。不并入 `dev`/`main`。
 
 ## 执行纪律
 
