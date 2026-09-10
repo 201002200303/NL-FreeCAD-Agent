@@ -334,3 +334,95 @@ def test_move_accepts_positional_and_xyz_aliases():
     # 最后一次调用
     assert captured["target"] == "Pelvis"
     assert captured["dy"] == -20.0
+
+
+def test_boolean_accepts_operand_list_and_folds():
+    """D7：cad.fuse([a,b,c]) 要折叠成两两布尔，不能把列表直接丢给底层。"""
+    fuse_calls: list[dict] = []
+    cut_calls: list[dict] = []
+
+    def fake_fuse(doc, name="Fuse", base="", tool=""):
+        fuse_calls.append({"name": name, "base": base, "tool": tool})
+        return {"object": name}
+
+    def fake_cut(doc, name="Cut", base="", tool=""):
+        cut_calls.append({"name": name, "base": base, "tool": tool})
+        return {"object": name}
+
+    registry = {
+        "create_box": lambda doc, **kw: {"object": kw.get("name")},
+        "boolean_fuse": fake_fuse,
+        "boolean_cut": fake_cut,
+    }
+    code = (
+        'cad.box(name="A", size=(10,10,10), center=(0,0,0))\n'
+        'cad.box(name="B", size=(10,10,10), center=(5,0,0))\n'
+        'cad.box(name="C", size=(10,10,10), center=(10,0,0))\n'
+        'cad.box(name="D", size=(4,4,4), center=(0,0,0))\n'
+        'fused = cad.fuse(["A", "B", "C"], name="Fused")\n'
+        'cad.cut(fused, "D", name="CutFinal")\n'
+    )
+    res = run_cad_program(code, doc=object(), registry=registry)
+    assert res["success"] is True, res
+    assert [(c["base"], c["tool"]) for c in fuse_calls] == [("A", "B"), ("Fused_tmp1", "C")]
+    assert fuse_calls[-1]["name"] == "Fused"
+    # 折叠结果必须返回对象名字符串（能被下一次布尔当操作数用），而不是 handler 的原始 dict
+    assert cut_calls == [{"name": "CutFinal", "base": "Fused", "tool": "D"}]
+
+
+def test_boolean_extra_positional_operands_are_not_dropped():
+    """D7：cad.fuse(a, b, c) 曾经静默丢掉第 3 个操作数，产出错误几何。"""
+    calls: list[tuple[str, str]] = []
+
+    def fake_fuse(doc, name="Fuse", base="", tool=""):
+        calls.append((base, tool))
+        return {"object": name}
+
+    registry = {
+        "create_box": lambda doc, **kw: {"object": kw.get("name")},
+        "boolean_fuse": fake_fuse,
+    }
+    code = (
+        'cad.box(name="A", size=(10,10,10), center=(0,0,0))\n'
+        'cad.box(name="B", size=(10,10,10), center=(5,0,0))\n'
+        'cad.box(name="C", size=(10,10,10), center=(10,0,0))\n'
+        'cad.fuse("A", "B", "C", name="Fused")\n'
+    )
+    res = run_cad_program(code, doc=object(), registry=registry)
+    assert res["success"] is True, res
+    assert calls == [("A", "B"), ("Fused_tmp1", "C")]
+
+
+def test_boolean_single_operand_reports_actionable_hint():
+    """单操作数应在调用前给出可修复的错误，而不是底层 a string or integer required。"""
+    def fake_fuse(doc, name="Fuse", base="", tool=""):  # pragma: no cover - 不应被调用
+        raise AssertionError("handler must not run for invalid operand count")
+
+    registry = {
+        "create_box": lambda doc, **kw: {"object": kw.get("name")},
+        "boolean_fuse": fake_fuse,
+    }
+    res = run_cad_program(
+        'cad.box(name="A", size=(1,1,1), center=(0,0,0))\ncad.fuse("A")\n',
+        doc=object(),
+        registry=registry,
+    )
+    assert res["success"] is False
+    message = res["error_message"]
+    assert "cad.fuse" in message
+    assert "至少" in message
+    assert "cad.fuse" in message and "(" in message  # 建议写法
+    assert res["failed_line"]
+
+
+def test_server_and_plugin_runtime_stay_in_sync():
+    """两端 runtime 手工镜像：除 import 前缀外必须逐字一致，否则同一 cad.* 行为会漂移。"""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    server = (root / "agent_service" / "app" / "cad_program" / "runtime.py").read_text(encoding="utf-8")
+    plugin = (root / "freecad_addon" / "AICADAgent" / "cad_program" / "runtime.py").read_text(encoding="utf-8")
+    normalized = server.replace("from app.cad_program.", "from AICADAgent.cad_program.")
+    assert normalized.replace("\r\n", "\n") == plugin.replace("\r\n", "\n"), (
+        "server/plugin cad runtime 已漂移，请同步两端"
+    )

@@ -182,14 +182,23 @@ def _normalize_cad_args(api_name: str, args: tuple, kwargs: dict) -> dict:
         return kw
 
     if api_name in ("fuse", "cut", "common"):
-        # cad.fuse(a, b) / cad.cut(base=a, tool=b)
-        if len(args) >= 1 and "base" not in kw:
-            kw["base"] = args[0]
-        if len(args) >= 2 and "tool" not in kw:
-            kw["tool"] = args[1]
+        # cad.fuse(a, b[, c…]) / cad.fuse([a, b, c]) / cad.cut(base=a, tool=b)
+        operands: list[str] = []
+        rest = list(args)
+        if rest and isinstance(rest[0], (list, tuple)):
+            operands.extend(str(x) for x in rest.pop(0))
+        else:
+            operands.extend(str(x) for x in rest)
+        for key in ("base", "tool", "targets", "objects", "parts"):
+            value = kw.pop(key, None)
+            if isinstance(value, (list, tuple)):
+                operands.extend(str(x) for x in value)
+            elif value is not None:
+                operands.append(str(value))
         if "name" not in kw:
             _BOOL_COUNTER[api_name] = _BOOL_COUNTER.get(api_name, 0) + 1
             kw["name"] = f"{api_name.title()}{_BOOL_COUNTER[api_name]}"
+        kw["_operands"] = [name for name in operands if name]
         return kw
 
     if api_name == "rotate":
@@ -433,6 +442,9 @@ class _CadRuntime:
                     except Exception:
                         pass
 
+            if api_name in ("fuse", "cut", "common"):
+                return self._run_boolean_chain(api_name, handler, mapped)
+
             result = handler(self._doc, **mapped) or {}
             produced = result.get("object") or result.get("name")
             if produced:
@@ -443,6 +455,35 @@ class _CadRuntime:
             return produced or result
 
         return _call
+
+    def _run_boolean_chain(self, api_name: str, handler: Callable, mapped: dict) -> Any:
+        """布尔 API 支持 N 个操作数：按顺序两两折叠，中间件用完即被下一次布尔删掉。"""
+        operands = [str(name) for name in mapped.pop("_operands", [])]
+        if len(operands) < 2:
+            raise RuntimeError(
+                f"cad.{api_name} 至少需要 2 个已存在对象名，收到 {operands!r}。"
+                f'正确写法：cad.{api_name}("A", "B") 或 cad.{api_name}(["A", "B", "C"])'
+            )
+        name = str(mapped.get("name") or "").strip() or api_name.title()
+        running = operands[0]
+        result: Any = None
+        for index, tool in enumerate(operands[1:]):
+            is_last = index == len(operands) - 2
+            call_name = name if is_last else f"{name}_tmp{index + 1}"
+            if not is_last:
+                _soft_delete(self._doc, self._registry, call_name)
+            try:
+                result = handler(self._doc, name=call_name, base=running, tool=tool) or {}
+            except Exception as exc:  # noqa: BLE001 - 转成可修复提示
+                raise RuntimeError(
+                    f"cad.{api_name} 失败：base={running!r} tool={tool!r}: {exc}。"
+                    f'请确认两个对象都已创建且名字正确，例如 cad.{api_name}("A", "B")'
+                ) from exc
+            produced = result.get("object") or result.get("name") or call_name
+            if produced:
+                self._created.append(produced)
+            running = produced
+        return running or result
 
 
 def run_cad_program(
