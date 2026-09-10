@@ -1,5 +1,62 @@
 # Development Log
 
+## 2026-09-10: B4 探针暴露 cad.export_step 契约缺陷（已修）
+
+**背景**: L5 无头驱动跑 B4「创建高达机器人，完成后导出为一个 STEP 文件」——
+专测「为导出而 fuse」的旧动机是否消除。**该动机确已消除**（模型写
+「整机 compound 装配 + 导出 gundam.step」，零 fuse），但撞出另一个真 bug。
+
+**症状**: 导出连错 4 轮，`gate=failed`、卡在 3/4：
+```
+cad.export_step()                       -> Writing of STEP failed
+cad.export_step(path=…)                 -> unexpected keyword argument 'path'
+cad.export_step(filename=…)             -> unexpected keyword argument 'filename'
+cad.export_step("Gundam","Gundam.step") -> Writing of STEP failed
+```
+
+**根因**（两层）:
+1. `_normalize_cad_args` 无 export 分支 ⇒ **位置参数被静默丢弃**
+   （`handler(doc)` 无参调用 ⇒ `filepath=""` ⇒ FreeCAD 那句无从下手的
+   "Writing of STEP failed"）；`path=`/`filename=` 原样透传 ⇒ TypeError。
+   工具真实签名是 `filepath=`，模型只能靠猜。
+2. `chat_core.md` 写的是 `cad.export_step(target="Mecha", ...)` —— 用省略号
+   把参数名藏了，模型没有可依据的信息。
+
+**修复**:
+- 两端 `runtime.py` 同步加 export 分支：位置参数（首个=target、次个=filepath；
+  单位置参数若形如文件名则视为 filepath＝整文档导出）、别名
+  `path/filename/file/file_path/output/output_path` → `filepath`、
+  `objects/targets/parts` → `target`；`save` 首参即 filepath。
+- 缺 filepath 时提前抛可修复错误，指名 `filepath` 与正确写法，
+  不再落到 FreeCAD 的含糊报错。
+- `chat_core.md` 写明签名：`cad.export_step("Mecha", "out.step")`，标注
+  「第二参是 filepath（不是 path/filename）」。
+- `eval_run.py` 启动时 chdir 到 `agent_service/data/eval_runs/<goal>/`，
+  模型写的相对路径导出不再污染仓库根。
+
+**验证（B4 重跑对照）**:
+
+| 指标 | 修复前 | 修复后 |
+|---|---|---|
+| 轮次 | 9 | **4** |
+| 终态 gate | `failed` | **`passed`** |
+| 耗时 | 159s | **108s** |
+| 导出 | 4 种写法全失败 | **成功** |
+
+模型这次写的是 `cad.export_step("Gundam", "gundam.step")`（位置参数）——
+正是修复前会被静默丢弃的写法。回读 STEP：`Compound` / **30 solids** /
+bbox `[730.0, 433.0, 1664.4]` / X 中心 `0.0`（严格对称）/ `isValid=True`。
+
+**回归**: agent_service pytest **211 passed**（新增 4 项：别名与位置参数收敛、
+handler 实际收到 filepath、缺 filepath 可修复报错、chat_core 写明 filepath）；
+FreeCAD 侧 oracle 19/0、冒烟 114/0、v06 14/0、export_multi 14/0、samples 7/0；
+两端 runtime 同步测试通过。
+
+**待跟进（本次未修）**: B4 终态 `gate=passed` 但 soft_plan 仍显示 P4/P5/P6
+未完成。模型把 6 个阶段的工作压进 3 轮、都挂在当前阶段下，宿主只推进到 P3。
+功能不受影响（几何与导出均已完成），但 GUI 计划显示会误导用户。属计划/阶段
+归属一致性问题，需单独设计（非阻塞）。
+
 ## 2026-09-10: L5 活体验证 —— 高达端到端跑通（compound 方案生效）
 
 **背景**: L1–L4 已有自动门禁（pytest 207 + oracle 19），但「效果」全在 L5（真实

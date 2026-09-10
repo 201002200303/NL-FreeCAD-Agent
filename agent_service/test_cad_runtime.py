@@ -426,3 +426,73 @@ def test_server_and_plugin_runtime_stay_in_sync():
     assert normalized.replace("\r\n", "\n") == plugin.replace("\r\n", "\n"), (
         "server/plugin cad runtime 已漂移，请同步两端"
     )
+
+
+def test_export_accepts_positional_and_common_alias_params():
+    """B4 回归：导出参数名不可猜，模型曾连续 4 轮试 path=/filename=/位置参数全都失败。
+
+    工具真实签名是 filepath=；normalize 必须收敛别名并接受位置参数。
+    """
+    from app.cad_program.runtime import _normalize_cad_args
+
+    m1 = _normalize_cad_args("export_step", ("Gundam", "Gundam.step"), {})
+    assert m1["target"] == "Gundam"
+    assert m1["filepath"] == "Gundam.step"
+
+    m2 = _normalize_cad_args("export_step", ("Gundam",), {"path": "Gundam.step"})
+    assert m2["target"] == "Gundam" and m2["filepath"] == "Gundam.step"
+
+    m3 = _normalize_cad_args("export_step", ("Gundam",), {"filename": "Gundam.step"})
+    assert m3["target"] == "Gundam" and m3["filepath"] == "Gundam.step"
+
+    m4 = _normalize_cad_args(
+        "export_step", (), {"target": "Gundam", "filepath": "Gundam.step"}
+    )
+    assert m4["filepath"] == "Gundam.step"
+
+    # 单个位置参数且形如文件名 ⇒ 整文档导出，它是 filepath 不是 target
+    m5 = _normalize_cad_args("export_step", ("out.step",), {})
+    assert m5.get("filepath") == "out.step" and "target" not in m5
+
+    # 整文档导出 + 显式 filepath 关键字
+    m6 = _normalize_cad_args("export_stl", (), {"filepath": "out.stl", "tolerance": 0.05})
+    assert m6["filepath"] == "out.stl" and m6["tolerance"] == 0.05
+
+    # target 的常见别名
+    m7 = _normalize_cad_args("export_step", (), {"objects": ["A", "B"], "filepath": "x.step"})
+    assert m7["target"] == ["A", "B"]
+
+
+def test_export_handler_receives_resolved_filepath():
+    """端到端：位置参数必须真的传到底层 handler，而不是被静默丢掉。"""
+    captured = {}
+
+    def fake_export(doc, target="", filepath=""):
+        captured.update({"target": target, "filepath": filepath})
+        return {"object": target, "filepath": filepath}
+
+    res = run_cad_program(
+        'cad.export_step("Gundam", "Gundam.step")',
+        doc=object(),
+        registry={"export_step": fake_export},
+    )
+    assert res["success"] is True, res
+    assert captured == {"target": "Gundam", "filepath": "Gundam.step"}
+
+
+def test_export_missing_filepath_reports_actionable_error():
+    """缺 filepath 时不能落到 FreeCAD 那句无从下手的 'Writing of STEP failed'。"""
+    calls = []
+
+    def fake_export(doc, target="", filepath=""):
+        calls.append(1)
+        return {}
+
+    res = run_cad_program(
+        'cad.export_step(target="Gundam")',
+        doc=object(),
+        registry={"export_step": fake_export},
+    )
+    assert res["success"] is False
+    assert not calls, "缺 filepath 不应调用底层 handler"
+    assert "filepath" in res["error_message"]

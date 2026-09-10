@@ -99,6 +99,14 @@ def test_chat_core_example_acceptance_includes_geometric_check():
     assert '"bbox_size"' in text or '"solid_count"' in text
 
 
+def test_chat_core_names_export_filepath_param():
+    """B4：导出参数名写全，否则模型只能靠猜（实测连试 path=/filename=/位置参数 4 轮）。"""
+    text = load_template("chat_core")
+    assert "cad.export_step" in text
+    assert "filepath" in text
+    assert "out.step" in text
+
+
 def test_plan_rules_require_geometric_acceptance():
     text = load_template("chat_plan_on")
     assert "硬约束" in text

@@ -38,6 +38,8 @@ L1-L4 已有自动门禁（pytest + 几何 Oracle），但「效果」全在 L5 
 1. `vision_enabled` 恒为 False —— FreeCADCmd 无 GUI，无法截图。
    GUI 下视觉会额外给出 verdict，本驱动拿不到。
 2. 同一进程内复用同一文档；面板会话可能跨文档。
+3. 启动时会 `chdir` 到 `agent_service/data/eval_runs/<goal>/`，让模型写的相对路径
+   导出落在隔离目录里，不污染仓库根。
 
 前置条件：Agent 服务已启动（否则 POST 直接失败）。
 """
@@ -279,8 +281,16 @@ def main() -> int:
     out = Path(os.environ.get("EVAL_OUT") or (REPO_ROOT / "agent_service" / "data" / f"_eval_{_slug(goal)}.txt"))
     log = Tee(out)
 
+    # 模型常写相对路径导出（如 cad.export_step("Gundam", "gundam.step")），
+    # 会落在进程 CWD。切到独立目录，避免污染仓库根，也让各次评测互不干扰。
+    # 该目录在 agent_service/data/ 下，已被 gitignore。
+    scratch = REPO_ROOT / "agent_service" / "data" / "eval_runs" / _slug(goal)
+    scratch.mkdir(parents=True, exist_ok=True)
+    os.chdir(scratch)
+
     log("=" * 78)
     log(f"L5 无头驱动   goal={goal}   max_turns={max_turns}")
+    log(f"工作目录       {scratch}")
     log("=" * 78)
     _check_handshake(log)
 

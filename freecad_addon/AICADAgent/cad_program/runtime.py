@@ -81,6 +81,16 @@ def _as_xyz(value: Any, *, label: str) -> tuple[float, float, float]:
     raise TypeError(f"{label} must be (x,y,z), got {value!r}")
 
 
+# 导出/保存文件名后缀：用于区分单位置参数是「目标对象」还是「输出文件」
+_FILE_EXTENSIONS = (
+    ".step", ".stp", ".stl", ".fcstd", ".iges", ".igs", ".brep", ".obj", ".3mf",
+)
+
+
+def _looks_like_filepath(value: Any) -> bool:
+    return str(value or "").strip().lower().endswith(_FILE_EXTENSIONS)
+
+
 def _axis_to_name(axis: Any) -> str:
     if isinstance(axis, str) and axis.strip():
         return axis.strip().upper()[:1] or "Z"
@@ -366,6 +376,39 @@ def _normalize_cad_args(api_name: str, args: tuple, kwargs: dict) -> dict:
         kw["targets"] = [str(x).strip() for x in operands if str(x or "").strip()]
         return kw
 
+    if api_name in ("export_step", "export_stl"):
+        # cad.export_step("Mecha", "out.step") | cad.export_step(target=…, filepath=…)
+        # 参数名极易猜错（实测模型试遍 path=/filename=/位置参数）：统一收敛到 filepath。
+        rest = list(args)
+        if rest and "target" not in kw:
+            first = str(rest.pop(0)).strip()
+            # 单个位置参数且形如文件名 ⇒ 整文档导出，它是 filepath 不是 target
+            if not rest and _looks_like_filepath(first):
+                kw.setdefault("filepath", first)
+            else:
+                kw.setdefault("target", first)
+                if rest:
+                    kw.setdefault("filepath", str(rest.pop(0)).strip())
+        for alias in ("objects", "targets", "parts"):
+            value = kw.pop(alias, None)
+            if value is not None and "target" not in kw:
+                kw["target"] = value
+        for alias in ("path", "filename", "file", "file_path", "output", "output_path"):
+            value = kw.pop(alias, None)
+            if value is not None:
+                kw.setdefault("filepath", value)
+        return kw
+
+    if api_name == "save":
+        # cad.save("out.FCStd")：filepath 是首参（无 target）
+        if args and "filepath" not in kw:
+            kw["filepath"] = str(args[0])
+        for alias in ("path", "filename", "file", "file_path", "output", "output_path"):
+            value = kw.pop(alias, None)
+            if value is not None:
+                kw.setdefault("filepath", value)
+        return kw
+
     # 其它 API：若有单个位置参数且无 target，当作 target
     if args and "target" not in kw and api_name in (
         "delete", "scale", "copy", "fillet", "chamfer", "hole", "set_property"
@@ -442,6 +485,15 @@ class _CadRuntime:
                 if self.boolean_count > MAX_BOOLEAN_OPS:
                     raise RuntimeError(f"boolean operation limit exceeded ({MAX_BOOLEAN_OPS})")
             mapped = _normalize_cad_args(api_name, args, kwargs)
+
+            if api_name in ("export_step", "export_stl", "save"):
+                # 缺路径时 FreeCAD 只报 "Writing of STEP failed"，无从下手；提前给出正确写法
+                if not str(mapped.get("filepath") or "").strip():
+                    raise RuntimeError(
+                        f"cad.{api_name} 需要 filepath（输出文件路径）。正确写法："
+                        f"cad.{api_name}('Mecha', 'Mecha.step') 导出指定对象；"
+                        f"或 cad.{api_name}('out.step') 导出整个文档"
+                    )
 
             if api_name == "delete":
                 deleted = _delete_targets(self._doc, self._registry, mapped.get("target"))

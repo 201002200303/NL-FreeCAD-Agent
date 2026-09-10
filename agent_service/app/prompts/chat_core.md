@@ -99,7 +99,9 @@ center / pos / 语义方向遵循该映射；禁止自创「前=+X」。
 - `cad.compound(["Leg_L", "Torso", "Head"], name="Mecha")`：
   - **不布尔、不要求重叠、不删源件**，零件保持独立实体
   - 源零件保留 ⇒ 后续阶段仍能单独改某个零件，也仍能做 `object_exists Leg_L` 类验收
-  - 导出 STEP/STL 仍是单一文件（`cad.export_step(target="Mecha", ...)`）
+  - 导出 STEP/STL 仍是单一文件：`cad.export_step("Mecha", "out.step")`
+    - 第二参是 **`filepath`**（不是 `path`/`filename`）；省略 target 则导出整个文档：
+      `cad.export_step("out.step")`。`cad.export_stl` 同签名，另有 `tolerance=`
 - **禁止**对整机逐个 `fuse`：fuse 会删掉源零件，导致后续阶段验收永远找不到中间件
   （实测：`fuse → 删源件 → 验收失败 → 删了重建` 的死循环）
 - 装配阶段的验收：用 `object_count` / `bbox_size` / `volume_range` / `object_exists`，
