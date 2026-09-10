@@ -1,4 +1,5 @@
 from app.phase_program import (
+    mark_current_phase,
     prepare_phase_tool_calls,
     reconcile_soft_plan,
     reduce_phase_feedback,
@@ -174,6 +175,57 @@ def test_awaiting_execution_marks_planned_phase_in_progress():
         phase_state={"phase_id": "P1", "status": "awaiting_execution"},
     )
     assert reconciled["items"][0]["status"] == "in_progress"
+
+
+def test_llm_cannot_mark_phase_done_without_any_phase_state():
+    """D2: 空 phase_state 不是绕过宿主计划状态的许可证。"""
+    host_plan = _plan()
+    proposed = _plan()
+    proposed["items"][0]["status"] = "done"
+    proposed["items"][1]["status"] = "done"
+
+    reconciled = reconcile_soft_plan(proposed, host_plan, phase_state=None)
+
+    assert reconciled["items"][0]["status"] == "in_progress"
+    assert reconciled["items"][1]["status"] == "pending"
+
+
+def test_first_turn_without_host_plan_accepts_agent_plan():
+    """首轮没有宿主计划时，模型计划可以成为宿主计划。"""
+    reconciled = reconcile_soft_plan(_plan(), None, phase_state=None)
+
+    assert reconciled["items"][0]["status"] == "in_progress"
+    assert reconciled["items"][1]["status"] == "pending"
+
+
+def test_host_phases_survive_agent_renamed_plan():
+    """换一套阶段 id 不能把宿主计划挤掉、也不能自称 done。"""
+    host_plan = _plan()
+    proposed = {"items": [{"id": "PX", "title": "全新阶段", "status": "done"}]}
+
+    reconciled = reconcile_soft_plan(proposed, host_plan, phase_state=None)
+
+    statuses = {item["id"]: item["status"] for item in reconciled["items"]}
+    assert statuses["P1"] == "in_progress"
+    assert statuses["P2"] == "pending"
+    assert statuses["PX"] == "pending"
+
+
+def test_mark_current_phase_maps_awaiting_execution_to_in_progress():
+    plan = _plan()
+    plan["items"][0]["status"] = "pending"
+
+    marked = mark_current_phase(plan, {"phase_id": "P1", "status": "awaiting_execution"})
+
+    assert marked["items"][0]["status"] == "in_progress"
+
+
+def test_mark_current_phase_marks_passed_phase_done():
+    plan = _plan()
+
+    marked = mark_current_phase(plan, {"phase_id": "P1", "status": "passed"})
+
+    assert marked["items"][0]["status"] == "done"
 
 
 def test_phase_state_round_trips_through_chat_schemas():

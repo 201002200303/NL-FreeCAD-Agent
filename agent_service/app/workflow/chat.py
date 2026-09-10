@@ -19,6 +19,7 @@ from app.design import format_design_brief
 from app.llm.llm_provider import call_llm
 from app.memory.prompt import build_compact_document_context, resolve_memory_pack
 from app.phase_program import (
+    mark_current_phase,
     prepare_phase_tool_calls,
     reconcile_soft_plan,
     reduce_phase_feedback,
@@ -197,34 +198,35 @@ def chat_turn(
             }
 
         parsed = _normalize_chat_result(result, soft_plan=host_plan, plan_mode=plan_mode)
+        # 1) 模型提议 vs 宿主权威计划：宿主阶段不可被丢弃，status 不可被改写
         parsed["soft_plan"] = reconcile_soft_plan(
             parsed.get("soft_plan"), host_plan, phase_state=host_phase_state
         )
+        # 2) 宿主附加程序身份（phase_id / hash / acceptance）
         prepared_calls, host_phase_state = prepare_phase_tool_calls(
             parsed.get("tool_calls") or [],
             session_id=sid,
             soft_plan=parsed.get("soft_plan"),
             phase_state=host_phase_state,
         )
-        parsed["soft_plan"] = reconcile_soft_plan(
-            parsed.get("soft_plan"), parsed.get("soft_plan"), phase_state=host_phase_state
-        )
+        # 3) 把宿主刚触达的阶段状态回显到计划（仅展示）
+        parsed["soft_plan"] = mark_current_phase(parsed.get("soft_plan"), host_phase_state)
         parsed["tool_calls"] = prefilter_tool_calls(prepared_calls)
         parsed["phase_state"] = host_phase_state
         phase_status = str(host_phase_state.get("status") or "")
+        phase_items = (parsed.get("soft_plan") or {}).get("items") or (
+            parsed.get("soft_plan") or {}
+        ).get("phases") or []
         unfinished = any(
             str(item.get("status") or "pending").lower() not in {"done", "completed"}
-            for item in (
-                (parsed.get("soft_plan") or {}).get("items")
-                or (parsed.get("soft_plan") or {}).get("phases")
-                or []
-            )
+            for item in phase_items
             if isinstance(item, dict)
         )
-        if parsed.get("status") == "done" and (
-            phase_status in {"awaiting_execution", "failed"}
-            or (phase_status == "passed" and unfinished)
-        ):
+        # 只有在宿主确认所有阶段 passed 时才允许模型声明 done；
+        # 无计划的纯对话不设门闩。
+        has_plan = bool(phase_items)
+        allow_done = (not has_plan) or (phase_status == "passed" and not unfinished)
+        if parsed.get("status") == "done" and not allow_done:
             parsed["status"] = "awaiting_tools" if prepared_calls else "awaiting_user"
         # 预算用尽或 warn：不因视觉硬推自动修码（仍允许用户明确要求时的建模）
         if not allow_vision_revise and vision_result and not vision_result.get("skipped"):

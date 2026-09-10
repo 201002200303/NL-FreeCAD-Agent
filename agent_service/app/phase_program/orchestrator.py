@@ -170,30 +170,82 @@ def reduce_phase_feedback(
     return PhaseReduction(plan, state, format_phase_feedback(state))
 
 
+def _items_ref(plan: dict) -> list:
+    """Return the live phase list inside a plan dict (items / phases)."""
+    for key in ("items", "phases"):
+        values = plan.get(key)
+        if isinstance(values, list):
+            return values
+    plan["items"] = []
+    return plan["items"]
+
+
+def mark_current_phase(plan: Optional[dict], phase_state: Optional[dict]) -> Optional[dict]:
+    """Reflect the host-owned phase status for the current phase into the plan.
+
+    This is presentation only; the control truth stays in phase_state.
+    """
+    if not isinstance(plan, dict):
+        return plan
+    phase_id = str((phase_state or {}).get("phase_id") or "")
+    if not phase_id:
+        return copy.deepcopy(plan)
+    state_status = str((phase_state or {}).get("status") or "")
+    marked = copy.deepcopy(plan)
+    for item in _items(marked):
+        if _phase_id(item) != phase_id:
+            continue
+        if state_status in {"awaiting_execution", "failed"}:
+            item["status"] = "in_progress"
+        elif state_status == "passed":
+            item["status"] = "done"
+        break
+    return marked
+
+
 def reconcile_soft_plan(
     proposed: Optional[dict],
     host_plan: Optional[dict],
     *,
     phase_state: Optional[dict],
 ) -> Optional[dict]:
-    """Let the Agent edit plan content while the host retains phase statuses."""
-    if not isinstance(proposed, dict):
-        return copy.deepcopy(host_plan) if isinstance(host_plan, dict) else proposed
-    if not isinstance(host_plan, dict) or not phase_state:
-        return proposed
-    authoritative = {_phase_id(item): item.get("status") for item in _items(host_plan) if _phase_id(item)}
-    reconciled = copy.deepcopy(proposed)
+    """Let the Agent edit plan content while the host retains phase statuses.
+
+    The host plan is authoritative whenever it has phases: its phases cannot be
+    dropped, and their statuses cannot be changed by the Agent.  New phases the
+    Agent adds are accepted but stay `pending` until the host advances them.
+    """
+    host_items = _items(host_plan) if isinstance(host_plan, dict) else []
+    if not host_items:
+        return mark_current_phase(proposed, phase_state)
+
+    proposed_by_id = {
+        _phase_id(item): item for item in _items(proposed) if _phase_id(item)
+    }
+
+    reconciled = copy.deepcopy(host_plan)
+    seen: set[str] = set()
     for item in _items(reconciled):
         pid = _phase_id(item)
-        if pid in authoritative:
-            item["status"] = authoritative[pid]
-        if pid == str(phase_state.get("phase_id") or ""):
-            state_status = str(phase_state.get("status") or "")
-            if state_status in {"awaiting_execution", "failed"}:
-                item["status"] = "in_progress"
-            elif state_status == "passed":
-                item["status"] = "done"
-    return reconciled
+        seen.add(pid)
+        incoming = proposed_by_id.get(pid)
+        if not incoming:
+            continue
+        # Agent may edit content, but status stays host-owned.
+        host_status = item.get("status")
+        item.update({key: value for key, value in incoming.items() if key != "status"})
+        if host_status is not None:
+            item["status"] = host_status
+
+    for extra in _items(proposed):
+        pid = _phase_id(extra)
+        if not pid or pid in seen:
+            continue
+        cloned = copy.deepcopy(extra)
+        cloned["status"] = "pending"
+        _items_ref(reconciled).append(cloned)
+
+    return mark_current_phase(reconciled, phase_state)
 
 
 def format_phase_feedback(phase_state: Optional[dict]) -> str:

@@ -32,10 +32,12 @@
 
 ### F1 — 修 Phase 门闩（D2/D3）`[x]`
 - 症状：空 `phase_state` 或模型自洽计划可让未执行的阶段被标 done 并 `done` 收尾。
-- 改法：`reconcile_soft_plan` 始终以宿主计划为权威；`chat.py` 删除第二次自洽调用；
-  `done` 收尾需宿主存在至少一个 `passed` 阶段且无未完成项。
-- 验收测试：`agent_service/test_phase_program.py`（宿主权威 / 新阶段保留 pending）、
-  `agent_service/test_chat_phase_program.py`（首轮不得 done）。
+- 改法：`reconcile_soft_plan` 始终以宿主计划为权威（宿主阶段不可被丢弃，模型新增阶段强制 pending）；
+  新增 `mark_current_phase` 只做状态回显，`chat.py` 删除第二次自洽 reconcile；
+  `done` 收尾需宿主 `phase_status == passed` 且无未完成项。
+- 验收测试：`agent_service/test_phase_program.py`（空 phase_state 不可越权 / 首轮接受 / 换 id 不丢宿主阶段 /
+  `mark_current_phase` 映射）、`agent_service/test_chat_phase_program.py`（首轮不得 done / 全 passed 才可 done /
+  换 id 重写不得丢宿主阶段）。**结果：17 passed，全量 129 passed**。
 
 ### F2 — 宿主锁定验收（D1）`[x]`
 - 症状：模型可放宽/替换/清空 acceptance 后让阶段 PASS。

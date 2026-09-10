@@ -132,3 +132,78 @@ def test_chat_turn_ignores_agent_attempt_to_bypass_failed_gate(monkeypatch):
     assert result["phase_state"]["status"] == "failed"
     assert result["soft_plan"]["items"][0]["status"] == "in_progress"
     assert result["soft_plan"]["items"][1]["status"] == "pending"
+
+
+def test_chat_turn_blocks_agent_declared_done_without_host_pass(monkeypatch):
+    """D2/D3: 首轮无宿主计划时，模型不能靠把阶段全标 done 收尾。"""
+    all_done = _plan(status="done")
+    all_done["items"][1]["status"] = "done"
+    _isolate_chat(
+        monkeypatch,
+        {
+            "message": "全部完成",
+            "status": "done",
+            "soft_plan": all_done,
+            "tool_calls": [],
+        },
+    )
+
+    result = chat_mod.chat_turn(
+        session_id="S1", message="做一个主体", plan_mode=True, vision_enabled=False
+    )
+
+    assert result["status"] != "done"
+    assert result["status"] == "awaiting_user"
+
+
+def test_chat_turn_allows_done_after_host_passed_every_phase(monkeypatch):
+    all_done = _plan(status="done")
+    all_done["items"][1]["status"] = "done"
+    _isolate_chat(
+        monkeypatch,
+        {
+            "message": "全部完成",
+            "status": "done",
+            "soft_plan": all_done,
+            "tool_calls": [],
+        },
+    )
+
+    result = chat_mod.chat_turn(
+        session_id="S1",
+        message="",
+        soft_plan=all_done,
+        phase_state={"phase_id": "P2", "status": "passed", "attempt": 1},
+        plan_mode=True,
+        vision_enabled=False,
+    )
+
+    assert result["status"] == "done"
+
+
+def test_chat_turn_keeps_host_phases_when_agent_renames_plan(monkeypatch):
+    """D2: 模型换 id 重写计划时，宿主阶段不得被丢弃或标 done。"""
+    renamed = {"items": [{"id": "PX", "title": "新阶段", "status": "done"}]}
+    _isolate_chat(
+        monkeypatch,
+        {
+            "message": "重排计划",
+            "status": "awaiting_user",
+            "soft_plan": renamed,
+            "tool_calls": [],
+        },
+    )
+
+    result = chat_mod.chat_turn(
+        session_id="S1",
+        message="继续",
+        soft_plan=_plan(),
+        phase_state={"phase_id": "P1", "status": "awaiting_execution", "attempt": 1},
+        plan_mode=True,
+        vision_enabled=False,
+    )
+
+    statuses = {item["id"]: item["status"] for item in result["soft_plan"]["items"]}
+    assert statuses.get("P1") == "in_progress"
+    assert statuses.get("P2") == "pending"
+    assert statuses.get("PX") == "pending"
