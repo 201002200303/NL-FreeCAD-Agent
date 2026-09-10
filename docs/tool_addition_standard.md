@@ -47,7 +47,7 @@ LLM (next_step)
 | `sketch` | `sketch_tools.py` | create_sketch / sketch_add_* | 草图 |
 | `partdesign` | `partdesign_tools.py` | pad / pocket / revolve… | PartDesign |
 | `surface` | `surface_tools.py` | loft / sweep / revolve | 曲面 |
-| `assembly` | `assembly_tools.py` | create_assembly / mate_* | 装配 |
+| `assembly` | `assembly_tools.py` / `compound_tools.py` | create_assembly / mate_* / make_compound | 装配（compound=不做布尔的整机组合） |
 | `export` | `export_tools.py` | save_fcstd / export_step / stl | 导出 |
 
 新增时优先放入已有模块；只有新领域才新建 `xxx_tools.py`。

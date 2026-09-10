@@ -134,6 +134,24 @@ def run_tests():
     })
     run("boolean_common", {"name": "CommonAB", "base": "K1", "tool": "K2"})
 
+    # ── compound（组合，不删源件）──
+    run("create_box", {"name": "CP1", "length": 20, "width": 20, "height": 20, "pos_y": 200})
+    run("create_box", {
+        "name": "CP2", "length": 20, "width": 20, "height": 20,
+        "pos_x": 30, "pos_y": 200,
+    })
+    run("make_compound", {"name": "AsmCP", "targets": ["CP1", "CP2"]})
+    check(
+        "compound_keeps_sources",
+        doc.getObject("CP1") is not None and doc.getObject("CP2") is not None,
+        "compound 不得删除源零件（fuse 会删）",
+    )
+    check(
+        "compound_two_solids",
+        len(doc.getObject("AsmCP").Shape.Solids) == 2,
+        "两个不接触零件组合后应仍是 2 个实体",
+    )
+
     # ── features ──
     run("create_box", {
         "name": "FeatBox", "length": 30, "width": 30, "height": 15, "pos_y": 220,

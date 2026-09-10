@@ -4,6 +4,7 @@ from AICADAgent.cad_tools.primitive_tools import (
     create_box, create_cylinder, create_sphere, create_cone, create_torus, create_wedge,
 )
 from AICADAgent.cad_tools.boolean_tools import boolean_fuse, boolean_cut, boolean_common
+from AICADAgent.cad_tools.compound_tools import make_compound
 from AICADAgent.cad_tools.feature_tools import add_fillet, add_chamfer, cut_hole
 from AICADAgent.cad_tools.transform_tools import (
     move, rotate, scale, copy_object, polar_pattern, linear_pattern,
@@ -39,6 +40,7 @@ TOOL_REGISTRY: dict = {
     "boolean_fuse": boolean_fuse,
     "boolean_cut": boolean_cut,
     "boolean_common": boolean_common,
+    "make_compound": make_compound,
     "add_fillet": add_fillet,
     "add_chamfer": add_chamfer,
     "cut_hole": cut_hole,

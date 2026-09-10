@@ -96,8 +96,11 @@ TOOL_CATEGORIES: dict[str, dict] = {
     },
     "assembly": {
         "label": "装配",
-        "description": "装配容器、加入零件、平面对齐/同轴配合",
-        "tools": ["create_assembly", "add_to_assembly", "mate_planes", "mate_coaxial"],
+        "description": "装配容器、加入零件、平面对齐/同轴配合、组合为整机（compound）",
+        "tools": [
+            "create_assembly", "add_to_assembly", "mate_planes", "mate_coaxial",
+            "make_compound",
+        ],
     },
 }
 

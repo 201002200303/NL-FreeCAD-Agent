@@ -16,10 +16,17 @@
    - 能 `center=` 直接算世界坐标，就先别 rotate 后再 fuse。
    - 拼装后视觉一体的组（起落架腿+滑撬），**可以留独立零件不 fuse**。
 3. **旋转后的 fuse 不是「合并视觉」**：只做装饰的贴合件不必 fuse；要一体再布尔，且只布尔**没再动过**的原语。
-4. **重复件（桨叶/对称）**：规则以主提示词 `agent_service/app/prompts/chat_core.md` 的「重复件」节为准——
+4. **整机装配用 `cad.compound([...], name=...)`，不要逐个 fuse**：
+   - compound **不布尔、不要求重叠、不删源件**，零件保持独立实体 → 后续还能单独改零件、做 `object_exists` 验收。
+   - fuse 会删掉源零件（`remove_objects`），整机 fuse 之后后续阶段验收必然找不到中间件，陷入
+     「fuse → 删源件 → 验收失败 → 删了重建」死循环。
+   - 导出仍然是一个文件：`cad.export_step(target=compound名, ...)`；也可省略 target 导出整个文档。
+   - 判定：这一步是为了「合成一个**局部单件**」→ fuse；为了「把多个零件装成一台机」→ compound。
+   - 装配阶段验收用 `object_count` / `bbox_size` / `volume_range` / `object_exists`，**不要**用 `solid_count == 1`。
+5. **重复件（桨叶/对称）**：规则以主提示词 `agent_service/app/prompts/chat_core.md` 的「重复件」节为准——
    源对象干净时首选 `cad.polar_pattern` / `cad.linear_pattern`；实例坐标要按几何推导、或对象已带 Placement 时，
    在 `for` 循环内新建每个实例并各自绕自身 `rotate(center=...)`。**禁止**复制同一个对象再逐次 rotate 累加。
-5. **动态名**：AST 校验禁 `str()`；名字列表先写死再循环取，或用 f-string。
+6. **动态名**：AST 校验禁 `str()`；名字列表先写死再循环取，或用 f-string。
 
 ---
 

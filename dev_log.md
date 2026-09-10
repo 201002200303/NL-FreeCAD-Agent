@@ -1,5 +1,36 @@
 # Development Log
 
+## 2026-09-10: 整机装配改用 compound（不再逐个 fuse）
+
+**背景**: 高达会话陷入 `fuse → 删源件 → 阶段验收找不到 Leg_R → 删了重建` 死循环。
+根因是「整机必须 fuse 成一体」的隐含假设与三处机制互斥：
+`boolean_tools.remove_objects` 删源件 vs 阶段验收 `object_exists Leg_R`；
+`export_tools` 只收单个 `target`（多零件只能靠 fuse 导出）；相切静默多实体迫使提示词加「轻嵌 1mm」补丁。
+
+**实测（FreeCADCmd 探针，决定性）**: 三个互不接触零件上 `fuse` 产出 **3 个实体**，
+体积 `132800` 与包围盒与 `Part.makeCompound` **完全相同**。
+⇒ 对整机装配 fuse 相对 compound **零收益**，却额外承担布尔风险、重叠要求与源件删除。
+（compound 还额外验证：可作文档对象、可继续 cut、STEP/STL 均能导出、源件保留。）
+
+**改**:
+1. 新增 `cad.compound([...], name=...)` → `make_compound`（新文件 `cad_tools/compound_tools.py`）：
+   不布尔、不要求重叠、**不删源件**；`Part::Feature` 可直接作导出 target。
+2. 新增 `AICADAgent/export_selection.py`（FreeCAD-free）：`export_step`/`export_stl` 支持
+   `target` 省略=整文档 / 单名 / 名字列表（多对象内部组合为 compound），缺失目标报可修复提示。
+   **整文档导出排除隐藏对象**：`hole`/`fillet` 走 `assign_shape_result` 会隐藏原参数件，
+   一起导出会在 STEP 里留下新旧两份重叠几何（叠影）；显式点名时放行。
+3. runtime（两份，逐字同步）：`compound` 入 `_CREATE_APIS` 与 recompute 列表；
+   `_normalize_cad_args` 收位置参数与 `targets=`/`objects=`。
+4. `chat_core.md` 新增「装配用 compound，不要整机 fuse」节；
+   `cad_script_writer_prompt.md`/`cad_modeling_recipes.md`/`code_mode.md` 同步，
+   并修掉 writer 文档里与 F7 冲突的「fuse/cut 是两参数，不是 list」。
+5. `CAD_API_VERSION` 1.1→**1.2**；`TOOL_SPECS`/`TOOL_CATEGORIES` 补 `make_compound`（boolean 类，54→55）。
+
+**验**: pytest **207 passed**；Oracle **19/19**（新增 `l4_compound_two_disjoint_boxes`）；
+FreeCADCmd 冒烟 **114/0**、v06 **14/0**、新增 `tests/test_export_multi.py` **14/0**
+（含 STEP 回读确认 2 实体、整文档导出跳过基准与隐藏源件）、samples **7/0**。
+插件是软链安装（`D:\freecad\Mod\AICADAgent` → 仓库），无需重装。
+
 ## 2026-09-10: 修「LLM 调用失败」——模型脏 JSON + 诊断分支自身崩溃
 
 **现象**: 面板报「LLM 调用失败，请重试或检查 API 配置」。服务端日志显示该轮 **两次尝试都 JSON 解析失败**。

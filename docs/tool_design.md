@@ -81,8 +81,8 @@ rename_object(target, new_name)
 文件和格式导出。
 
 ```
-export_step(target, filepath)
-export_stl(target, filepath, tolerance)
+export_step(target="", filepath)          # target 省略 = 整文档；也可传名字列表
+export_stl(target="", filepath, tolerance)
 export_obj(target, filepath)
 save_fcstd(filepath)
 ```

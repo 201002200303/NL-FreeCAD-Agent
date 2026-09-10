@@ -43,7 +43,7 @@
   - 侧轮/水平轴沿 X → **`rot_y=90`**  
   - 轴沿 ±Y → **`rot_x=±90`**  
 - `cad.cone` / `cad.torus` 同样用 `rot_*`。  
-- `cad.fuse(a, b)` / `cad.cut(a, b)`：两个对象名（或变量），**不要**传 list 当唯一位置参数。  
+- `cad.fuse(a, b)` / `cad.cut(a, b)` / `cad.compound([a, b], name=...)`：操作数可传多个位置参数或名字列表（N 个操作数会顺序折叠）。  
 - `cad.hole(target=..., hole_diameter=d, axis="Z"|"X"|"Y")`：侧壁孔必须 `axis=X|Y`。
 
 **主体优先**
@@ -57,8 +57,10 @@
 **装配 / 旋转（无人机踩坑）**
 
 - 接触件按「尺寸栈」算：从已知面推下一层 `center`（下层顶 = 上层底 + 1mm overlap），不盲搬外部 `translate`。  
+- **整机装配用 `cad.compound([...], name=...)`，不要逐个 fuse**：compound 不布尔、不要求重叠、**不删源件**，
+  后续仍能单独改零件、仍能做 `object_exists` 验收；fuse 会删源件，让后续阶段验收必然失败。  
 - `move`/`rotate` 改的是 Placement；**旋转/移动过的对象别再 `fuse` / `pattern(fuse=True)`**（易丢位姿/双重偏移）。  
-- 纯装饰贴合件（腿+滑撬、云台件）**留独立零件不 fuse**，别硬布尔。  
+- **fuse 只用于真正的局部单件**（支架=底板+肋板）。纯装饰贴合件（腿+滑撬、云台件）留独立零件，别硬布尔。  
 - 重复件规则以 `agent_service/app/prompts/chat_core.md`「重复件」节为准：源对象干净首选 `polar_pattern`/`linear_pattern`；
   坐标需推导或对象已带 Placement 时，在 `for` 循环内新建各实例再绕自身 `rotate`（见 recipes 样例 3）。
 
@@ -76,10 +78,11 @@
 
 - [ ] 只用 manifest 里的 `cad.*`  
 - [ ] 侧轮/水平圆柱带了正确 `rot_*`  
-- [ ] fuse/cut 是两参数，不是 list  
+- [ ] 操作数写法正确（fuse/cut/compound 可传多个或列表，不是只能两参数）  
 - [ ] move 是相对位移  
 - [ ] extrude 平面与 direction 匹配；无 center=  
 - [ ] 重复件按 chat_core 二选一（干净源对象用 pattern；已带 Placement 则循环内新建）  
+- [ ] 整机装配用 compound，没有对整机逐个 fuse  
 - [ ] 需要成一体 fuse 的接触面轻嵌 1mm，没有共面相切  
 - [ ] 开头 delete 将创建的名字  
 - [ ] 接触件按尺寸栈算 center；旋转过的没再 fuse/pattern(fuse)  

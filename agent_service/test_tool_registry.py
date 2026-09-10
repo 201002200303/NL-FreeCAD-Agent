@@ -19,9 +19,9 @@ def test_registry_alignment():
 
 
 def test_tool_count():
-    assert len(TOOL_SPECS) == 54, f"Expected 54 tools, got {len(TOOL_SPECS)}"
+    assert len(TOOL_SPECS) == 55, f"Expected 55 tools, got {len(TOOL_SPECS)}"
     all_categorized = sum(len(c["tools"]) for c in TOOL_CATEGORIES.values())
-    assert all_categorized == 54
+    assert all_categorized == 55
     assert "mirror" not in TOOL_SPECS
     assert "create_wedge" in TOOL_SPECS
     assert "make_sweep" in TOOL_SPECS

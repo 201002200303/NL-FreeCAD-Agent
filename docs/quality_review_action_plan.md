@@ -27,6 +27,7 @@
 | D12 | P2 | 仓库脏：主线未提交、根目录无关文件、诊断产物 | 11 commits / 57 dirty；根目录 `test.py`（LeetCode）；`prompts_test_robot*.{txt,json}` |
 | D13 | P1 | 曲面 bbox 用了近似值，污染验收与对齐 | `Shape.BoundBox` 对 torus R20/r5 报 54.12（真实 50）；`document_state.py:141` 用它作验收 `bbox_size`。由 F3 Oracle 实测发现 |
 | D14 | P2 | 遗留测试断言过时/覆盖缺口 | `test_v06_freecad_tools.py` 断言 `registry_count == 54`；`test_all_tools_smoke.py` 未覆盖 `create_wedge` |
+| D15 | P1 | 「整机必须 fuse 成一体」的隐含假设与三处机制互斥 | 实测高达会话陷入 `fuse → 删源件 → 验收失败 → 删了重建` 死循环；`boolean_tools.remove_objects` 删源件 vs 阶段验收 `object_exists Leg_R`；`export_tools.py` 只收单个 `target`，多零件只能靠 fuse 导出；相切静默多实体迫使提示词加「轻嵌 1mm」补丁 |
 
 ## 行动项与状态
 
@@ -107,6 +108,32 @@
 
 > 更正：D14 说 v06 的 `registry_count == 54` 已过时——实测注册表仍是 54 项，
 > 真正问题是「精确计数」使新增工具即红，故改为下界断言；`create_wedge` 未覆盖属实（已补）。
+
+### F9 — 整机装配改用 compound（D15）`[x]`
+- 症状：整机装配逐个 `fuse` 时，`boolean_tools` 按设计 `remove_objects` 删源零件，后续阶段验收
+  `object_exists Leg_R / Arm_R` 必然失败，模型转而「删了重建」，形成死循环；同时 fuse 要求接触面
+  有实体重叠，相切/微隙会静默产成多实体，于是又被迫在提示词里加「轻嵌 1mm」补丁。
+- 实测依据（FreeCADCmd 探针）：三个互不接触零件上，`fuse` 产出 **3 个实体**、体积与包围盒与
+  `Part.makeCompound` **完全相同** —— 对整机装配，fuse 相对 compound **零收益**，却额外承担
+  布尔风险、重叠要求与源件删除。
+- 改法：
+  - 新增 `cad.compound([...], name=...)` → `make_compound`（`cad_tools/compound_tools.py`）：
+    不布尔、不要求重叠、**不删源件**，零件保持独立实体；`Part::Feature` 可直接作导出 target。
+  - 新增 `AICADAgent/export_selection.py`（FreeCAD-free）：`export_step` / `export_stl` 现支持
+    `target` 省略=整文档、单名、名字列表（多对象内部组合为 compound 导出），缺失目标报可修复提示。
+    **整文档导出排除隐藏对象**：`hole`/`fillet`/`chamfer` 走 `assign_shape_result` 会把原参数件
+    `Visibility=False`，若一起导出 STEP 里就有新旧两份重叠几何（叠影）；显式点名则放行。
+  - `chat_core.md` 新增「装配用 compound，不要整机 fuse」节，明确 fuse 仅用于局部单件；
+    `cad_script_writer_prompt.md` / `cad_modeling_recipes.md` / `code_mode.md` 同步，
+    并修掉 `cad_script_writer_prompt.md` 里与 F7 冲突的「fuse/cut 是两参数，不是 list」。
+  - `CAD_API_VERSION` 1.1 → **1.2**（契约新增 API）；`TOOL_SPECS`/`TOOL_CATEGORIES` 补
+    `make_compound`（boolean 类，工具数 54 → 55）。
+- 验收测试：`test_cad_compound.py`（列表/位置参数、变量返回、**不删源件**、同名只替换结果名）、
+  `test_export_selection.py`（整文档/单名/列表/去重/跳过基准/排除隐藏/可修复报错）；
+  Oracle 新增 `l4_compound_two_disjoint_boxes`（多实体、体积、bbox、valid）；
+  FreeCADCmd 新增 `tests/test_export_multi.py`（含 STEP 回读确认 2 实体、整文档导出跳过基准、
+  排除 `cut_hole` 隐藏的源件）。
+- **结果：pytest 207 passed；oracle 19/19、冒烟 114/0、v06 14/0、export_multi 14/0、samples 7/0。**
 
 ## 执行纪律
 

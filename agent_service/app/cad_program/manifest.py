@@ -17,6 +17,7 @@ CAD_TO_TOOL = {
     "cut": "boolean_cut",
     "fuse": "boolean_fuse",
     "common": "boolean_common",
+    "compound": "make_compound",
     "move": "move",
     "rotate": "rotate",
     "scale": "scale",
@@ -47,4 +48,5 @@ CAD_TO_TOOL = {
 }
 
 CAD_API_METHODS = frozenset(CAD_TO_TOOL)
-CAD_API_VERSION = "1.1"
+# 1.2: 新增 cad.compound（整机装配用组合，不做布尔/不删源件）
+CAD_API_VERSION = "1.2"

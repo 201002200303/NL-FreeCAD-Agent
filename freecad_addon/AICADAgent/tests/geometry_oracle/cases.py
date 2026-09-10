@@ -145,6 +145,29 @@ CASES: list[dict] = [
         "expect": {"solids": 1, "volume_range": [6350, 6500]},
         "ref": "8000 - pi*5^2*20 = 6429mm^3",
     },
+    # ── L4: compound（整机装配：不布尔、不删源件）──────────────────────
+    {
+        "id": "l4_compound_two_disjoint_boxes",
+        "layer": "L4",
+        "code": (
+            'a = cad.box(name="A", size=(20, 20, 20), center=(0, 0, 10))\n'
+            'b = cad.box(name="B", size=(20, 20, 20), center=(30, 0, 10))\n'
+            'cad.compound([a, b], name="Asm")\n'
+        ),
+        "object": "Asm",
+        "expect": {
+            "bbox_size": [50, 20, 20],
+            "bbox_center": [15, 0, 10],
+            "solids": 2,
+            "volume_range": [15990, 16010],
+            "valid": True,
+        },
+        "ref": (
+            "Part.makeCompound keeps both boxes as separate solids (no boolean): "
+            "span x -10..40, volume 2*8000; this is what whole-machine assembly "
+            "should use instead of fuse"
+        ),
+    },
     # ── L4: patterns ───────────────────────────────────────────────────
     {
         "id": "l4_polar_pattern_axis_z",

@@ -134,6 +134,18 @@ TOOL_SPECS: dict = {
         },
         "required": ["name", "base", "tool"],
     },
+    "make_compound": {
+        "description": "组合多个零件为单一对象（Composite/Compound）：不做布尔、不删源件，用于整机装配",
+        "parameters": {
+            "name": {"type": "string", "description": "结果对象名称"},
+            "targets": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "要组合的源对象名称列表",
+            },
+        },
+        "required": ["name", "targets"],
+    },
     "boolean_cut": {
         "description": "布尔切割：从 base 中减去 tool (Part::Feature)",
         "parameters": {
@@ -393,21 +405,21 @@ TOOL_SPECS: dict = {
         "required": ["filepath"],
     },
     "export_step": {
-        "description": "导出对象为 STEP 文件",
+        "description": "导出对象为 STEP 文件；target 省略则导出整个文档，也可传名称列表",
         "parameters": {
-            "target": {"type": "string", "description": "目标对象名称"},
+            "target": {"description": "目标对象名（string）或名称列表（array）；省略=整个文档"},
             "filepath": {"type": "string", "description": "导出路径 (.step/.stp)"},
         },
-        "required": ["target", "filepath"],
+        "required": ["filepath"],
     },
     "export_stl": {
-        "description": "导出对象为 STL 网格文件",
+        "description": "导出对象为 STL 网格文件；target 省略则导出整个文档，也可传名称列表",
         "parameters": {
-            "target": {"type": "string", "description": "目标对象名称"},
+            "target": {"description": "目标对象名（string）或名称列表（array）；省略=整个文档"},
             "filepath": {"type": "string", "description": "导出路径 (.stl)"},
             "tolerance": {"type": "float", "default": 0.1, "description": "网格精度；仅在 tessellate 回退路径生效，原生 exportStl 忽略"},
         },
-        "required": ["target", "filepath"],
+        "required": ["filepath"],
     },
     # ── query (几何事实查询) ──
     "summarize_document": {

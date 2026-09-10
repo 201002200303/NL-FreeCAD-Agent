@@ -63,7 +63,7 @@ _BOOL_COUNTER = {"fuse": 0, "cut": 0, "common": 0}
 # 创建类 API：同名已存在时先删再建，避免 FreeCAD 自动改名成 Name001 叠影
 _CREATE_APIS = frozenset({
     "box", "cylinder", "sphere", "cone", "torus",
-    "fuse", "cut", "common",
+    "fuse", "cut", "common", "compound",
     "sketch", "extrude", "pad", "pocket", "revolve", "loft",
 })
 
@@ -346,6 +346,26 @@ def _normalize_cad_args(api_name: str, args: tuple, kwargs: dict) -> dict:
             kw["profiles"] = args[0]
         return kw
 
+    if api_name == "compound":
+        # cad.compound(["A","B"], name="Mecha") / cad.compound("A", "B", name="Mecha")
+        # 全部位置参数都当操作数；结果名只从 name= 取（避免把名字混进零件列表）
+        operands: list = []
+        for value in args:
+            if isinstance(value, (list, tuple)):
+                operands.extend(value)
+            elif value is not None:
+                operands.append(value)
+        for alias in ("targets", "objects"):
+            value = kw.pop(alias, None)
+            if value is None:
+                continue
+            if isinstance(value, (list, tuple)):
+                operands.extend(value)
+            else:
+                operands.append(value)
+        kw["targets"] = [str(x).strip() for x in operands if str(x or "").strip()]
+        return kw
+
     # 其它 API：若有单个位置参数且无 target，当作 target
     if args and "target" not in kw and api_name in (
         "delete", "scale", "copy", "fillet", "chamfer", "hole", "set_property"
@@ -434,7 +454,8 @@ class _CadRuntime:
                     _soft_delete(self._doc, self._registry, existing)
 
             # 草图→拉伸/放样前强制 recompute，否则同事务内 Shape 仍为空
-            if api_name in ("extrude", "pad", "pocket", "revolve", "loft"):
+            # compound 要读源对象 Shape，同样需要先 recompute
+            if api_name in ("extrude", "pad", "pocket", "revolve", "loft", "compound"):
                 recompute = getattr(self._doc, "recompute", None)
                 if callable(recompute):
                     try:

@@ -42,7 +42,7 @@ def test_removed_query_placeholders_are_rejected_in_preflight():
 
 def test_cad_api_version_is_released_and_matches_plugin():
     """版本号不带 -test 后缀，否则任何版本差分都会误判不兼容。"""
-    assert CAD_API_VERSION == "1.1"
+    assert CAD_API_VERSION == "1.2"
     assert plugin_manifest_mod.CAD_API_VERSION == CAD_API_VERSION
 
 

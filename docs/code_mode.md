@@ -55,7 +55,10 @@ Agent 提议 soft_plan / 当前阶段程序
 - 几何：`cad.box(name=..., size=(L,W,H), center=(x,y,z))`；`cad.cylinder(..., center=..., rot_x/y/z=...)`
 - **朝向**：圆柱默认轴 +Z（无 rot = 平放）。侧轮 `rot_y=90`（轴沿 X）；轴沿 Y 用 `rot_x=±90`；`cad.hole` 侧壁孔必须 `axis=X|Y`
 - **主体优先**：`cad.sketch` → `cad.polyline/rect/circle` → `cad.extrude`；多截面用 `cad.loft`；禁止旋转实体拼主体外形
-- 布尔：`cad.fuse(a, b)` / `cad.cut(a, b)`
+- 布尔：`cad.fuse(a, b)` / `cad.cut(a, b)`（操作数可传多个或名字列表）
+- **整机装配**：`cad.compound([a, b, c], name="Mecha")` —— 不布尔、不删源件；**不要**对整机逐个 `fuse`
+  （fuse 会删源件，后续阶段验收找不到中间件）；装配阶段验收别用 `solid_count == 1`
+- 导出：`cad.export_step(target=..., filepath=...)`；省略 `target` 导出整个文档，也可传名字列表
 - **圆周/直线均布必须用阵列**（禁止 `for` + `cad.rotate` 布齿）：
   - `cad.polar_pattern(tooth, count=12, fuse=True, fuse_name="ToothRing")`
   - `cad.linear_pattern(bar, count=4, offset=(12,0,0), fuse=True, fuse_name="BarRow")`

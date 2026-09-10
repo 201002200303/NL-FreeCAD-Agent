@@ -14,8 +14,8 @@
    - 建模/修改：`execute_cad_program`，`args.code` 是受限 Python
    - 视觉开启时截图：`capture_views`（见「视觉」节）；可与建模分轮，也可同轮先建模再截图
 3. `execute_cad_program` 的 `args.code` 规则：
-   - 只允许 `cad.*`（如 `cad.box/cad.cylinder/cad.sketch/cad.polyline/cad.extrude/cad.loft/cad.cut/cad.fuse/cad.move/cad.rotate/cad.polar_pattern/cad.linear_pattern/cad.hole/cad.fillet/cad.delete`）、`math.*`、基础字面量与 `for`、`list.append`
-   - 几何：`cad.box(name=..., size=(L,W,H), center=(x,y,z))`；`cad.cylinder(name=..., radius=r, height=h, center=(x,y,z), rot_x=0, rot_y=0, rot_z=0)`；`cad.fuse(a,b)` / `cad.cut(a,b)`；`cad.hole(target=..., hole_diameter=d, axis="Z"|"X"|"Y")`
+   - 只允许 `cad.*`（如 `cad.box/cad.cylinder/cad.sketch/cad.polyline/cad.extrude/cad.loft/cad.cut/cad.fuse/cad.compound/cad.move/cad.rotate/cad.polar_pattern/cad.linear_pattern/cad.hole/cad.fillet/cad.delete`）、`math.*`、基础字面量与 `for`、`list.append`
+   - 几何：`cad.box(name=..., size=(L,W,H), center=(x,y,z))`；`cad.cylinder(name=..., radius=r, height=h, center=(x,y,z), rot_x=0, rot_y=0, rot_z=0)`；`cad.fuse(a,b)` / `cad.cut(a,b)` / `cad.compound([a,b], name=...)`；`cad.hole(target=..., hole_diameter=d, axis="Z"|"X"|"Y")`
    - **主体轮廓（优先）**：
      - `sk = cad.sketch(name="Profile", plane="XZ")`（平面：XY/XZ/YZ；Part 拉伸，**不需要** PartDesign Body）
      - `cad.polyline(sk, points=[[x,y],...], closed=True)`（推荐）；或 `cad.rect(sk, x, y, w, h)` 角点；或 `cad.circle(sk, cx, cy, r)`；或 `cad.line(sk, x1, y1, x2, y2)`
@@ -91,6 +91,19 @@ center / pos / 语义方向遵循该映射；禁止自创「前=+X」。
 - 统一写法：**接触面轻嵌 1mm**。从已知面推下一层：
   `上层底 = 已知面`，`下层顶 = 上层底 - 1mm`，`center_z = (顶 + 底) / 2`
 - 只做装饰的贴合件**不必 fuse**，留独立零件；要一体再布尔，且只布尔**没有再 move/rotate 过**的原语
+
+### 装配用 compound，不要整机 fuse（强制，易错）
+- **判定**：这一步是为了「合成一个零件」还是「把多个零件装成一台机」？
+  - 合成**局部单件**（支架=底板+肋板、法兰+凸台）→ `cad.fuse`
+  - **整机装配**（人形/机械臂/车辆等由多个部件组成）→ `cad.compound([...])`
+- `cad.compound(["Leg_L", "Torso", "Head"], name="Mecha")`：
+  - **不布尔、不要求重叠、不删源件**，零件保持独立实体
+  - 源零件保留 ⇒ 后续阶段仍能单独改某个零件，也仍能做 `object_exists Leg_L` 类验收
+  - 导出 STEP/STL 仍是单一文件（`cad.export_step(target="Mecha", ...)`）
+- **禁止**对整机逐个 `fuse`：fuse 会删掉源零件，导致后续阶段验收永远找不到中间件
+  （实测：`fuse → 删源件 → 验收失败 → 删了重建` 的死循环）
+- 装配阶段的验收：用 `object_count` / `bbox_size` / `volume_range` / `object_exists`，
+  **不要**用 `solid_count == 1` 卡 —— 分离部件的 compound 天然就是多实体
 
 ## 建模策略（主体优先）
 - 复杂模型先做**主体**：优先「闭合截面 → 拉伸」；矩形棱柱可用 `cad.box` 当作最简拉伸
