@@ -1,12 +1,20 @@
 # 工具整测台（TEST）
 
-脚本：`agent_service/data/_tool_test_bench.cad.py`  
-新入库（`CAD_API_TEST`）：**`cad.sweep`**、**`cad.wedge`**
+> **2026-09-10 起**：`cad.sweep` / `cad.wedge` **已从模型可见目录移除**（即
+> `CAD_TO_TOOL` 不再包含它们，`CAD_API_TEST` 已删除）。工具本体仍在
+> `TOOL_REGISTRY`（L2 冒烟覆盖）。原因：两者没有几何 Oracle 用例，暴露给模型只会换来失败回合。
+>
+> 想恢复 `cad.*` 路径：先在 `agent_service/app/cad_program/manifest.py` 加回映射，
+> 跑 `python scripts/sync_cad_manifest.py`，并**必须先补 L3/L4 Oracle 用例**
+> （`freecad_addon/AICADAgent/tests/geometry_oracle/cases.py`）。
+
+脚本：`agent_service/data/_tool_test_bench.cad.py`（该目录被 gitignore，属本地人工台）
 
 ## 你怎么验
 
 1. **重启 FreeCAD**（或重载 AICADAgent），吃到新 `create_wedge` / `make_sweep`
-2. CAD Playground 粘贴 `_tool_test_bench.cad.py` → 运行
+2. 用 L3 直调路径验证（`cad.*` 路径已关）：
+   `D:\freecad\bin\freecadcmd.exe -c "import sys; sys.path.insert(0, r'<repo>\freecad_addon'); import runpy; runpy.run_path(r'<repo>\freecad_addon\AICADAgent\tests\test_all_tools_smoke.py', run_name='__main__')"`
 3. 对照下面打分，把反馈模板填回给我
 
 ## 模型应该长什么样（iso / 侧视）

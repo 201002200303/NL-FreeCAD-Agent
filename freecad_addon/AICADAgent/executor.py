@@ -103,8 +103,12 @@ class CadToolExecutor:
         """Run execute_cad_program in a single transaction with compact result."""
         # FreeCAD 进程常驻：磁盘上改了 cad_program 后必须 reload，否则仍用启动时旧 _CAD_TO_TOOL
         import importlib
+        import AICADAgent.cad_program.manifest as _cad_manifest
         import AICADAgent.cad_program.validate as _cad_validate
         import AICADAgent.cad_program.runtime as _cad_runtime
+        # manifest 必须先 reload：validate/runtime 在模块级 from manifest import
+        # 常量，只 reload 它们不会重读 manifest。
+        importlib.reload(_cad_manifest)
         importlib.reload(_cad_validate)
         importlib.reload(_cad_runtime)
         run_cad_program = _cad_runtime.run_cad_program

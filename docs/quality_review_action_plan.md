@@ -66,9 +66,14 @@
   回归：oracle 18/18、placement/pattern/cad_program_samples 全绿、pytest 146 passed。
 
 ### F4 — cad 契约单一源（D8）`[x]`
-- 改法：`agent_service/app/cad_program/manifest.py` 为唯一源，插件副本由脚本生成/校验；
-  热加载补 `manifest`；`CAD_API_VERSION` 去掉 `-test`；TEST API 从模型可见目录移除（保留工具本身）。
-- 验收测试：`test_cad_contract_manifest.py`（双端一致 + 无 TEST 残留）。
+- 改法：`agent_service/app/cad_program/manifest.py` 为唯一源，新增 `scripts/sync_cad_manifest.py`
+  生成/校验插件副本（`--check` 不一致即退出 1）；`executor` 热加载补 `manifest`（必须先于
+  validate/runtime reload，否则模块级常量不刷新）；`CAD_API_VERSION` = `1.1`（去 `-test`）；
+  删除无引用的 `CAD_API_TEST`；`wedge`/`sweep` 移出模型可见目录（工具本体与 `TOOL_SPECS` 保留），
+  两份 runtime 里随之失效的 sweep/wedge 归一化分支删除。
+- 验收测试：`test_cad_contract_manifest.py`（版本/插件一致、实验 API 不可见但工具保留、
+  生成副本与 canonical 逐字一致、drift 能检出、executor 确实 reload manifest）。
+  **结果：7 passed，全量 151 passed；FreeCAD 侧 oracle 18/18、cad_program_samples 7/7。**
 
 ### F5 — 握手 fail-open（D9）`[x]`
 - 改法：`_cad_api_compatible` 为 `None`/失败时**允许执行**；仅显式版本不一致才拦；失败自动重试。

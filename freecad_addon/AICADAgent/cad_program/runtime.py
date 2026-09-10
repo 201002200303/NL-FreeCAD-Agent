@@ -62,9 +62,9 @@ _BOOL_COUNTER = {"fuse": 0, "cut": 0, "common": 0}
 
 # 创建类 API：同名已存在时先删再建，避免 FreeCAD 自动改名成 Name001 叠影
 _CREATE_APIS = frozenset({
-    "box", "cylinder", "sphere", "cone", "torus", "wedge",
+    "box", "cylinder", "sphere", "cone", "torus",
     "fuse", "cut", "common",
-    "sketch", "extrude", "pad", "pocket", "revolve", "loft", "sweep",
+    "sketch", "extrude", "pad", "pocket", "revolve", "loft",
 })
 
 # 草图几何：首参常为 sketch 名
@@ -337,31 +337,6 @@ def _normalize_cad_args(api_name: str, args: tuple, kwargs: dict) -> dict:
             kw["profiles"] = args[0]
         return kw
 
-    if api_name == "sweep":
-        # cad.sweep(name=..., profile=..., path=..., solid=True, frenet=False)
-        if "solid" in kw and "make_solid" not in kw:
-            kw["make_solid"] = bool(kw.pop("solid"))
-        else:
-            kw.pop("solid", None)
-        return kw
-
-    if api_name == "wedge":
-        # cad.wedge(name=..., size=(L,W,H), center=..., tip_scale=0.4, taper_axis="Y")
-        size = kw.pop("size", None)
-        if size is not None:
-            sx, sy, sz = _as_xyz(size, label="size")
-            kw.setdefault("length", sx)
-            kw.setdefault("width", sy)
-            kw.setdefault("height", sz)
-        center = kw.pop("center", None)
-        if center is not None:
-            cx, cy, cz = _as_xyz(center, label="center")
-            kw.setdefault("pos_x", cx)
-            kw.setdefault("pos_y", cy)
-            kw.setdefault("pos_z", cz)
-            kw.setdefault("anchor", "center")
-        return kw
-
     # 其它 API：若有单个位置参数且无 target，当作 target
     if args and "target" not in kw and api_name in (
         "delete", "scale", "copy", "fillet", "chamfer", "hole", "set_property"
@@ -450,7 +425,7 @@ class _CadRuntime:
                     _soft_delete(self._doc, self._registry, existing)
 
             # 草图→拉伸/放样前强制 recompute，否则同事务内 Shape 仍为空
-            if api_name in ("extrude", "pad", "pocket", "revolve", "loft", "sweep"):
+            if api_name in ("extrude", "pad", "pocket", "revolve", "loft"):
                 recompute = getattr(self._doc, "recompute", None)
                 if callable(recompute):
                     try:

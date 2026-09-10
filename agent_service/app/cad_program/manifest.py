@@ -1,7 +1,11 @@
 """Canonical model-visible CAD operation catalog.
 
-The FreeCAD add-on carries an identical packaged copy because it is installed
-outside the Agent process.  Conformance tests require both copies to match.
+This file is the single source of truth.  The FreeCAD add-on ships a generated
+copy (scripts/sync_cad_manifest.py) because it is installed outside the Agent
+process; both copies must stay identical.
+
+`create_wedge` / `make_sweep` stay in TOOL_REGISTRY but are NOT model-visible:
+they have no geometric Oracle case yet, so exposing them only buys failed turns.
 """
 
 CAD_TO_TOOL = {
@@ -10,7 +14,6 @@ CAD_TO_TOOL = {
     "sphere": "create_sphere",
     "cone": "create_cone",
     "torus": "create_torus",
-    "wedge": "create_wedge",  # TEST
     "cut": "boolean_cut",
     "fuse": "boolean_fuse",
     "common": "boolean_common",
@@ -38,14 +41,10 @@ CAD_TO_TOOL = {
     "pocket": "pocket_sketch",
     "revolve": "revolve_sketch",
     "loft": "make_loft",
-    "sweep": "make_sweep",  # TEST
     "export_step": "export_step",
     "export_stl": "export_stl",
     "save": "save_fcstd",
 }
 
-# 标注：已入库但人工验收中，整测脚本见 agent_service/data/_tool_test_bench.cad.py
-CAD_API_TEST = frozenset({"sweep", "wedge"})
-
 CAD_API_METHODS = frozenset(CAD_TO_TOOL)
-CAD_API_VERSION = "1.1-test"
+CAD_API_VERSION = "1.1"
