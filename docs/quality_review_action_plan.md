@@ -76,8 +76,13 @@
   **结果：7 passed，全量 151 passed；FreeCAD 侧 oracle 18/18、cad_program_samples 7/7。**
 
 ### F5 — 握手 fail-open（D9）`[x]`
-- 改法：`_cad_api_compatible` 为 `None`/失败时**允许执行**；仅显式版本不一致才拦；失败自动重试。
-- 验收测试：`test_cad_contract_manifest.py` + 静态断言（插件侧不可用 pytest 时用源码守卫）。
+- 症状：探测未回/失败即把 `_cad_api_compatible` 置 False，且执行门是 `is not True`，等于永久阻断建模。
+- 改法：新增无 FreeCAD/Qt 依赖的 `AICADAgent/capabilities.py::evaluate_cad_api_compatibility`
+  （语义：只有两端都报了版本且不同才算不兼容）；执行门改为 `is False`（未知即放行）；
+  探测失败保持 `None` 并按 3s 递增退避重试最多 5 次。
+- 验收测试：`agent_service/test_agent_capabilities.py`——策略纯逻辑单测（匹配/缺字段/空白/确认不一致）
+  + 源码守卫（门闩是 `is False`、失败保持未知、有重试）。**结果：6 passed，全量 157 passed**；
+  已用 `git show HEAD:` 验证守卫在改动前确实会红。
 
 ### F6 — 消除语义矛盾（D5/D6）`[x]`
 - 改法：`chat_core.md` 成为唯一规则源：重复件的**允许写法**按实际能力收敛，

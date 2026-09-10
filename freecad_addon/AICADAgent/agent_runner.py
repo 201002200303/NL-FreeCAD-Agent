@@ -29,6 +29,10 @@ AGENT_BASE_URL = "http://127.0.0.1:8765"
 # 含工具列表的 chat 单轮常 30–90s；视觉+多轮回灌更容易超时，给足余量
 HTTP_TIMEOUT_SEC = 600
 
+# 能力探测失败时的退避重试（服务端可能还没启动）
+_CAPABILITIES_MAX_RETRIES = 5
+_CAPABILITIES_RETRY_MS = 3000
+
 
 def _format_soft_plan(plan: dict | None) -> str:
     if not plan:
@@ -130,7 +134,9 @@ class AgentRunner(QtCore.QObject):
         self._lifecycle_worker: Optional[HTTPWorker] = None
         self._chat_busy = False
         self._capabilities: dict = {}
+        # None=未知（放行）/ True=匹配 / False=已确认不兼容（才阻断）
         self._cad_api_compatible: Optional[bool] = None
+        self._capabilities_retry_attempt = 0
         self._pending_user_message: Optional[str] = None
         self._chat_epoch = 0
         self._tool_queue: list = []
@@ -294,15 +300,19 @@ class AgentRunner(QtCore.QObject):
         self._capabilities = result or {}
         try:
             from AICADAgent.cad_program.manifest import CAD_API_VERSION
+            from AICADAgent.capabilities import evaluate_cad_api_compatibility
 
-            remote_version = str((result or {}).get("cad_api_version") or "")
-            self._cad_api_compatible = remote_version == CAD_API_VERSION
-            if not self._cad_api_compatible:
-                self.log_message.emit(
-                    f"CAD 程序契约不兼容：插件={CAD_API_VERSION} 服务端={remote_version}；已暂停建模执行"
-                )
-        except Exception:
-            self._cad_api_compatible = False
+            blocked, reason = evaluate_cad_api_compatibility(
+                (result or {}).get("cad_api_version"), CAD_API_VERSION
+            )
+            self._cad_api_compatible = not blocked
+            if blocked:
+                self.log_message.emit(f"{reason}；已暂停建模执行")
+        except Exception as exc:
+            # 取不到本地契约不是不兼容证据：保持未知（fail-open）
+            self._cad_api_compatible = None
+            self.log_message.emit(f"契约版本比较失败: {exc}；本次不阻断建模")
+        self._capabilities_retry_attempt = 0
         vision = (result or {}).get("vision") or {}
         self.log_message.emit(
             f"服务端: chat={result.get('chat')} vision_available={vision.get('available')} "
@@ -312,8 +322,17 @@ class AgentRunner(QtCore.QObject):
             self.chat.vision_enabled = False
 
     def _on_capabilities_failed(self, error: str):
-        self._cad_api_compatible = False
-        self.log_message.emit(f"能力探测失败: {error}；为防止契约漂移，已暂停建模执行")
+        # 探测失败=None（未知），不阻断；退避重试（服务端可能还没起来）
+        self._cad_api_compatible = None
+        self.log_message.emit(f"能力探测失败: {error}；本次不阻断建模，稍后重试")
+        self._schedule_capabilities_retry()
+
+    def _schedule_capabilities_retry(self):
+        if self._capabilities_retry_attempt >= _CAPABILITIES_MAX_RETRIES:
+            return
+        delay = _CAPABILITIES_RETRY_MS * (self._capabilities_retry_attempt + 1)
+        self._capabilities_retry_attempt += 1
+        QtCore.QTimer.singleShot(delay, self.fetch_capabilities)
 
     def set_plan_mode(self, enabled: bool):
         if self.chat is None:
@@ -603,7 +622,8 @@ class AgentRunner(QtCore.QObject):
             self._emit_chat("system", result.get("message") or "错误")
 
     def _execute_chat_tools(self, tool_calls: list):
-        if self._cad_api_compatible is not True:
+        # fail-open：只有已确认版本不兼容才阻断；未知（探测未回/失败）照常执行
+        if self._cad_api_compatible is False:
             self.error_occurred.emit("CAD 程序契约版本不兼容，请同步更新服务端与 FreeCAD 插件")
             self._set_chat_busy(False)
             return
