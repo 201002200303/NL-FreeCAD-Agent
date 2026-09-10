@@ -1,5 +1,43 @@
 # Development Log
 
+## 2026-09-10: L5 活体验证 —— 高达端到端跑通（compound 方案生效）
+
+**背景**: L1–L4 已有自动门禁（pytest 207 + oracle 19），但「效果」全在 L5（真实
+LLM + 宿主 + FreeCAD），此前无任何度量。查 `runtime.db` 发现 Code Mode 的 chat
+路径**不写 `session_events`**，但每轮把 `phase_state`/`soft_plan`/`tool_calls`
+以 JSON note 写进 `conversation_messages` —— 这是唯一现成的度量通道。
+
+**新增 `scripts/session_report.py`**: 还原每轮阶段轨迹 + 收敛指标
+（gate / 阶段推进 / cad.compound / cad.fuse 次数 / 计划含整机 fuse / 轮数）。
+
+**无头驱动**: 镜像 `agent_runner` 的客户端循环但无 Qt（FreeCADCmd 内跑），
+直接 POST `/agent/chat` → 本地 `CadToolExecutor` 执行 → 回灌 tool_results，
+vision_enabled=False（无 GUI）。可复现地跑任意用户需求。
+
+**B1 高达对照（同一需求，仅版本不同）**:
+
+| 指标 | 1.1 基线 | 1.2 新版 |
+|---|---|---|
+| 终态 gate | `awaiting_execution` | **`passed`** |
+| 阶段推进 | 2/5 | **6/6** |
+| `cad.compound` | False | **True** |
+| `cad.fuse` | **21 次** | **0 次** |
+| 计划含整机 fuse | True | **False** |
+| 助手轮次 | 3（停滞中断） | 8（走完） |
+
+**模型自主采用 compound**: P6 阶段标题即「整机装配（compound，不整体 fuse）」；
+首轮 message 明确「最终以 compound 装配（不做整机 fuse，便于后续单独修改/验收）」
+—— 提示词改动确实落地。生成代码零 `fuse`，纯原语 + 末尾一次 `cad.compound`。
+
+**独立复核**（重放模型代码于真实 runtime）: `ShapeType=Compound`、solids=20、
+bbox `[96.0, 59.0, 192.3]`、volume 291091（与门闩声明一致）；**源零件保留=True**；
+左右对称 x 和 = 0.0000；单 compound 与整文档 STEP 均导出成功。
+
+**意外收获（F2 生效证据）**: 第 7 轮宿主**驳回**了 P6 的 acceptance
+（「门闩因结构检查缺几何验收（只写了 object_exists/object_count）而失败」），
+模型随后补上 `bbox_size`/`volume_range` 并重跑通过 —— F2 的几何检查硬约束在真实
+链路上确实拦住了。
+
 ## 2026-09-10: 整机装配改用 compound（不再逐个 fuse）
 
 **背景**: 高达会话陷入 `fuse → 删源件 → 阶段验收找不到 Leg_R → 删了重建` 死循环。

@@ -134,6 +134,21 @@
   FreeCADCmd 新增 `tests/test_export_multi.py`（含 STEP 回读确认 2 实体、整文档导出跳过基准、
   排除 `cut_hole` 隐藏的源件）。
 - **结果：pytest 207 passed；oracle 19/19、冒烟 114/0、v06 14/0、export_multi 14/0、samples 7/0。**
+- **L5 活体验证（同一需求对照）**：新增 `scripts/session_report.py` 度量 Code Mode 每轮
+  阶段轨迹（该路径不写 session_events，note 落在 conversation_messages）。无头驱动
+  （镜像 agent_runner 循环、无 Qt）跑「创建一个人形的高达模型」：
+
+  | 指标 | 1.1 基线 | 1.2 新版 |
+  |---|---|---|
+  | 终态 gate | `awaiting_execution` | **`passed`** |
+  | 阶段推进 | 2/5 | **6/6** |
+  | `cad.compound` | False | **True** |
+  | `cad.fuse` | 21 次 | **0 次** |
+  | 计划含整机 fuse | True | **False** |
+
+  模型自主写出「整机装配（compound，不整体 fuse）」阶段；独立复核 20 零件全保留、
+  `ShapeType=Compound`、对称误差 0、单文件 STEP 可导出。另观察到 F2 硬约束在真实链路上
+  驳回了一次缺几何检查的 acceptance（第 7 轮），模型随后补齐并重跑通过。
 
 ## 执行纪律
 
