@@ -38,8 +38,8 @@ LLM_TIMEOUT_SEC = float(os.getenv("LLM_TIMEOUT_SEC", "180") or "180")
 def _get_llm_config() -> tuple[str, str, str]:
     return (
         os.getenv("OPENAI_API_KEY", ""),
-        os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-        os.getenv("LLM_MODEL", "gpt-4o-mini"),
+        os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com"),
+        os.getenv("LLM_MODEL", "deepseek-flash"),
     )
 
 
@@ -189,24 +189,15 @@ def _attempt_llm_call(
 
     client = OpenAI(api_key=api_key, base_url=base_url, timeout=LLM_TIMEOUT_SEC)
     t0 = time.time()
-    # qwen3.x 推理模型 thinking 很重；能关则关，不支持时回退
-    kwargs = dict(
+    # DeepSeek 要求 response_format=json_object 时 prompt 里必须出现字面 "json"
+    # （app 各 system prompt 均满足，见 test_prompts.py 守卫）
+    response = client.chat.completions.create(
         model=model,
         messages=messages,
         response_format={"type": "json_object"},
         temperature=0.3,
         max_tokens=LLM_MAX_TOKENS,
     )
-    try:
-        response = client.chat.completions.create(
-            **kwargs, extra_body={"enable_thinking": False}
-        )
-    except Exception as exc:
-        msg = str(exc).lower()
-        if "enable_thinking" in msg or "thinking" in msg or "invalidparameter" in msg:
-            response = client.chat.completions.create(**kwargs)
-        else:
-            raise
     content = _message_text(response.choices[0].message)
     print(
         f"[LLM Provider] ok in {time.time() - t0:.1f}s "

@@ -8,8 +8,8 @@ PORT = int(os.getenv("PORT", "8765"))
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./data/cad_agent.db")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com")
+LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-flash")
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "16384") or "16384")
 LLM_TIMEOUT_SEC = float(os.getenv("LLM_TIMEOUT_SEC", "180") or "180")
 

@@ -1,5 +1,23 @@
 # Development Log
 
+## 2026-09-10: 切换 LLM/Vision 到 DeepSeek `deepseek-flash`（多模态已实测）
+
+**因**: 换用 `https://api.deepseek.com` + `deepseek-flash`。先探针验证再落地。
+
+**探针结论**（`GET /models` 仅有 `deepseek-flash` / `deepseek-v4-pro`）:
+- **多模态成立**：无文字标注的图能正确报出「左黄三角/中绿方块/右紫圆」；同一提示词去掉图则答「未提供图片」，排除「猜中」。
+- 走通 app 现有调用路径：`response_format=json_object`、图像+JSON 同时可用、`extra_body={"enable_thinking": False}` 被静默接受但不生效。
+- **它仍是推理模型**：completion 里 reasoning 占大头（实测 1257/2084）；`max_tokens` 必须留出推理预算。
+- **硬约束**：`json_object` 要求 prompt 里出现字面 `json`，否则 400。
+
+**改**:
+1. `.env` / `.env.example`：`OPENAI_BASE_URL=https://api.deepseek.com`、`LLM_MODEL`/`VISION_MODEL=deepseek-flash`，视觉复用同一 key（不再配第二家）。
+2. `app/config.py`、`llm_provider._get_llm_config`：默认值从 OpenAI `gpt-4o` 改为 deepseek，避免缺 .env 时静默打到没有 key 的 OpenAI。
+3. `llm_provider`：删除 qwen 专用的 `enable_thinking` 分支（DeepSeek 不生效，属上一家 provider 的死路径）。
+4. `test_prompts.py`：新增守卫，锁死「所有 system prompt 必含 json」这条 DeepSeek 契约。
+
+**验**: pytest 167 passed；真机 `/agent/chat` 200 且产出正确 `execute_cad_program`，`/agent/capabilities` 报 `vision.model=deepseek-flash`、`available=true`；视觉 `assess_views` 返回结构化 verdict；单轮 4.7–9.7s（qwen 约 30s）。
+
 ## 2026-09-10: 质量整改 F1–F8（分支 fix/review-hardening，不并主线）
 
 **因**: 审查见 `docs/quality_review_action_plan.md`（D1–D14）。治愈点：门闩可绕、验收由被审模型自定、无 L3/L4 几何门禁、契约双源、握手失败即永久阻断、提示词互相矛盾、错误不可修复、曲面 bbox 近似。

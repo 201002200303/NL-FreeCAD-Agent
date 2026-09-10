@@ -129,3 +129,23 @@ def test_brief_still_injects_user_input():
         vision_on=True,
     )
     assert brief in prompt
+
+
+def test_prompts_satisfy_deepseek_json_object_requirement():
+    """DeepSeek 规定 response_format=json_object 时 prompt 必须含字面 "json"。
+
+    call_llm 与视觉链路都走 json_object，一旦哪份 system prompt 不再提 JSON，
+    线上会直接 400。这里把该契约钉住。
+    """
+    for plan_mode in (True, False):
+        for vision_on in (True, False):
+            prompt = chat_mod.build_chat_system_prompt(
+                message="建一辆车",
+                user_goal="建一辆车",
+                plan_mode=plan_mode,
+                vision_on=vision_on,
+            )
+            assert "json" in prompt.lower(), (plan_mode, vision_on)
+
+    assert "json" in load_template("vision").lower()
+    assert "json" in load_template("compress").lower()
