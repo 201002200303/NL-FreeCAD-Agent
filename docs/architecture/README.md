@@ -5,6 +5,7 @@
 | 用途 | 文档 |
 |------|------|
 | 一次建模请求的数据流 / 行号 / 提示词 | **[../request_walkthrough.md](../request_walkthrough.md)** |
+| 时间线式开发路径与里程碑 | [../development_path.md](../development_path.md) |
 | Code Mode 约定 | [../code_mode.md](../code_mode.md) |
 | 仓库总览 | [../../README.md](../../README.md) |
 
@@ -57,10 +58,23 @@
 
 [详细文档](./v07-architecture.md)
 
+### V0.8 - CAD Harness Core
+- 在 V0.7 闭环前后插入受控 Harness：`Spec → Inspect → Recipe → Abstract Step → Verify → Repair`
+- 尝试"空 grounding"（不把完整文档状态塞给模型）与 query-driven 执行
+- **不替换** V0.7 的 OPAE 循环，而是包裹它
+
+历史文档：[../archive/api_contract_v08.md](../archive/api_contract_v08.md)、[../archive/runtime_flow_v08.md](../archive/runtime_flow_v08.md)
+
+### V0.9 - Runtime 重构（已执行）
+- 把运行时按职责拆分为 validate / runtime / memory / conversation
+- query-driven 路线在此阶段被验证为"成本高、易漂移"，促成后续 chat-first 转向
+
+历史文档：[../archive/runtime_refactor.md](../archive/runtime_refactor.md)、[../archive/v09_implementation_playbook.md](../archive/v09_implementation_playbook.md)
+
 ### V0.10 - Code Mode（已演进为 Phase Program 主路径）
 - 主入口仍为 `POST /agent/chat`，但建模动作为 `execute_cad_program`
 - 受限 Python（`cad.*`）+ AST 沙箱 + 客户端单事务
-- 53 工具退到执行器内部；圆周均布走 `polar_pattern`
+- 55 工具退到执行器内部；圆周均布走 `polar_pattern`
 - 可选多视图 VLM；**尚无** bbox/贴合几何门禁
 
 ### Phase Program Mainline（当前）
@@ -77,13 +91,17 @@
 
 ```mermaid
 graph LR
-    V01[V0.1 规则引擎] --> V02[V0.2-V0.3 工具模块化]
-    V02 --> V04[V0.4 LLM集成]
-    V04 --> V05[V0.5 LangGraph 单次Plan]
-    V05 --> V06[V0.6 37 tools]
-    V06 --> V07[V0.7 闭环 OPAE]
-    V07 --> V08[V0.8 chat-first]
-    V08 --> V10[V0.10 Code Mode]
+    V01["V0.1 规则引擎"] --> V02["V0.2–V0.3 工具模块化"]
+    V02 --> V04["V0.4 LLM 集成"]
+    V04 --> V05["V0.5 LangGraph 单次 Plan"]
+    V05 --> V06["V0.6 37 tools"]
+    V06 --> V07["V0.7 闭环 OPAE"]
+    V07 --> V08["V0.8 CAD Harness"]
+    V08 --> V09["V0.9 Runtime 重构"]
+    V09 --> V10["V0.10 Code Mode"]
+    V10 --> MAIN["Phase Program 主路径<br/>（当前）"]
+
+    style MAIN fill:#d6e9ff,stroke:#3b7ddd
 ```
 
 ## V0.5 → V0.7 关键变化速查

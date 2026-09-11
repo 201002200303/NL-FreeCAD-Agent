@@ -1,6 +1,10 @@
 # Historical Development Plan - Query-Driven Agent
 
-> 本文记录 V0.8/V0.9 的旧 query-driven 路线，不再是当前执行依据。当前唯一开发主线见 [development_mainline.md](development_mainline.md)。
+> **归档文档**：本文记录的是已被取代的历史方案，不是当前实现依据。
+> 当前主线见 [development_mainline.md](../development_mainline.md) / [code_mode.md](../code_mode.md)；归档清单见 [README.md](./README.md)。
+
+
+> 本文记录 V0.8/V0.9 的旧 query-driven 路线，不再是当前执行依据。当前唯一开发主线见 [development_mainline.md](../development_mainline.md)。
 
 ## 0. 当前方向
 

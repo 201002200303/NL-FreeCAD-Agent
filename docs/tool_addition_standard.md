@@ -1,8 +1,8 @@
 # CAD 工具新增与验收标准
 
 > 本文是后续新增工具的唯一执行规范。  
-> 工具数以 `TOOL_SPECS` / `TOOL_REGISTRY` 对齐为准（当前约 54 个）。  
-> 相关旧文：`docs/tool_design.md`（分层思想）、`docs/api_contract_v08.md`（API 契约）。
+> 工具数以 `TOOL_SPECS` / `TOOL_REGISTRY` 对齐为准（当前 55 个）。  
+> 相关旧文：`docs/tool_design.md`（分层思想）、`docs/archive/api_contract_v08.md`（API 契约，历史）。
 
 ---
 

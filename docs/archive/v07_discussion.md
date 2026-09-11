@@ -1,5 +1,9 @@
 # V0.7 架构升级讨论稿
 
+> **归档文档**：本文记录的是已被取代的历史方案，不是当前实现依据。
+> 当前主线见 [development_mainline.md](../development_mainline.md) / [code_mode.md](../code_mode.md)；归档清单见 [README.md](./README.md)。
+
+
 ## 一、当前状态（V0.6）
 
 ### 1.1 整体流程

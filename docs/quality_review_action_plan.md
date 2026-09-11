@@ -1,7 +1,9 @@
 # 质量审查与整改行动方案
 
 > 审查日期：2026-09-10。基线 commit：`f743a12`（`dev`）+ 未提交 Phase Program WIP。
-> 整改分支：`fix/review-hardening`（**不并入 dev/main**，效果确认后再合）。
+> 整改分支：`fix/review-hardening`；F1–F9 全部完成并已并入 `main`。
+> 文中引用的证据文件（`data/_*.txt`、`data/_geometry_oracle_report.*`）位于被 gitignore 的
+> `agent_service/data/`，属本地诊断产物，仓库内不提供。
 
 ## 结论（一句话）
 
@@ -104,7 +106,7 @@
   冒烟补 `create_wedge` 用例，`all_registry_tools_invoked` 恢复通过；
   新增 `test_server_and_plugin_runtime_stay_in_sync` 守卫两端 runtime 漂移。
 - 验收：pytest **166 passed**；FreeCADCmd 冒烟 **109/0**、v06 **14/0**、oracle **18/0**、cad_program_samples **7/0**。
-- 分支 `fix/review-hardening` 已提交 F1–F8，**未并入 `dev`/`main`**。
+- 分支 `fix/review-hardening` 已提交 F1–F8（后续 F9 与 L5 验证亦在该分支完成，最终并入 `main`）。
 
 > 更正：D14 说 v06 的 `registry_count == 54` 已过时——实测注册表仍是 54 项，
 > 真正问题是「精确计数」使新增工具即红，故改为下界断言；`create_wedge` 未覆盖属实（已补）。

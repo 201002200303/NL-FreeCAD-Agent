@@ -9,12 +9,16 @@ build/
 .venv/
 venv/
 env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Environment
 .env
 .env.local
 
-# FreeCAD backup files
+# FreeCAD backup files / documents
+*.FCStd
 *.FCStd1
 *.FCBak
 *.FCStd.bak

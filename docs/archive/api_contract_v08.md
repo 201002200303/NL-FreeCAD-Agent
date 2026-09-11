@@ -1,5 +1,9 @@
 # API Contract V0.8 - CAD Harness Core
 
+> **归档文档**：本文记录的是已被取代的历史方案，不是当前实现依据。
+> 当前主线见 [development_mainline.md](../development_mainline.md) / [code_mode.md](../code_mode.md)；归档清单见 [README.md](./README.md)。
+
+
 V0.8 keeps the V0.7 closed loop and adds a controlled CAD Harness path:
 
 `Spec -> Inspect -> Recipe -> Abstract Step -> Verify -> Repair`
@@ -248,4 +252,3 @@ Response:
   ]
 }
 ```
-

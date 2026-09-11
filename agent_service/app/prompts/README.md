@@ -8,7 +8,7 @@
 1. 打开对应 `.md`，顶部 `<!-- ... -->` 是用途说明（不进模型）。
 2. `[[NAME]]` 是运行时注入点，不要改错名字。
 3. JSON 示例用普通 `{` / `}`。
-4. **主路径不再注入 53 工具完整 schema**；模型通过 `execute_cad_program` 写受限 `cad.*` 程序；视觉开启时可另调 `capture_views`。
+4. **主路径不再注入 55 工具完整 schema**；模型通过 `execute_cad_program` 写受限 `cad.*` 程序；视觉开启时可另调 `capture_views`。
 5. `packs/` 为可选任务细则（保留）；主 chat 默认只装 `chat_core` + plan/vision 片段。
 
 ## 文件索引

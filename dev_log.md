@@ -1,5 +1,31 @@
 # Development Log
 
+## 2026-09-11: 仓库作品集化整理（文档/文件，不动代码）
+
+**目标**: 整理开发路径、仓库文件与文档，达到可展示、可使用程度；不改动任何项目代码。
+
+**发现**: `main` 落后当前分支 31 个提交（他人打开仓库看到的是旧版本）；
+仓库 0 张图片；20 篇文档中 9 篇自述已过时；README 工具数 53 与实际 55 不符；
+`debug_sessions/` 占 111 MB；`docs/samples` 引用的脚本在被 gitignore 的 `data/` 里（clone 后死链）。
+
+**改动**:
+1. **分支**: `fix/review-hardening` 合并入 `main` 并推送 origin。
+2. **文件**: 清理磁盘垃圾（201 MB → 56 MB）、新增 `LICENSE`(MIT/haowu)、
+   补 `.gitignore`（`.pytest_cache/`、`*.FCStd` 等）。
+3. **文档分层**: 9 篇历史文档移入 `docs/archive/` + 统一归档横幅 + 索引；
+   新增 `docs/README.md`（文档地图）与 `docs/development_path.md`（时间线叙事，V0.1→现在）。
+4. **纠偏**: 工具数 53→55（4 处）；pytest 244→246（手册基线）；
+   `tech_debt.md` 重写为"未解决/已还清"两表（TD-PHASE-1/2/3 与 Oracle 已还清，TD-PHASE-4 仍未修）；
+   `CONTEXT.md` 已知缺口同步；`quality_review_action_plan.md` 去掉"不并入主线"的过时说明。
+5. **素材**: 根目录截图收入 `docs/assets/gui_overview.png`，README 只用这一张。
+   （曾用 `scripts/eval_run` 跑 4 个样例并导出 STL 渲染成图，但渲染无法清晰呈现结构、样例观感一般，**已弃用并删除**。）
+6. **README** 重写为作品集入口：界面图 + 原理 + 架构图 + 五层验证表 + 快速开始 + 已知限制
+   （明确写出"几何正确性可验、观感不稳定"）。
+
+**验证**: `pytest` 246 passed；文档链接 143 条全部有效（脚本核查）。
+
+**未动**: 任何 `.py` / 提示词 / 契约代码。
+
 ## 2026-09-11: 修复「LLM 调用失败」——推理 token 吃光输出预算
 
 **触发**: 用户跑法拉利 911（5 阶段复杂任务），前几轮正常，随后报
@@ -306,7 +332,7 @@ FreeCADCmd 冒烟 **114/0**、v06 **14/0**、新增 `tests/test_export_multi.py`
 
 **验**: pytest 167 passed；真机 `/agent/chat` 200 且产出正确 `execute_cad_program`，`/agent/capabilities` 报 `vision.model=deepseek-flash`、`available=true`；视觉 `assess_views` 返回结构化 verdict；单轮 4.7–9.7s（qwen 约 30s）。
 
-## 2026-09-10: 质量整改 F1–F8（分支 fix/review-hardening，不并主线）
+## 2026-09-10: 质量整改 F1–F8（分支 fix/review-hardening）
 
 **因**: 审查见 `docs/quality_review_action_plan.md`（D1–D14）。治愈点：门闩可绕、验收由被审模型自定、无 L3/L4 几何门禁、契约双源、握手失败即永久阻断、提示词互相矛盾、错误不可修复、曲面 bbox 近似。
 

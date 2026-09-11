@@ -1,5 +1,9 @@
 # 旧架构清理可行性评估
 
+> **归档文档**：本文记录的是已被取代的历史方案，不是当前实现依据。
+> 当前主线见 [development_mainline.md](../development_mainline.md) / [code_mode.md](../code_mode.md)；归档清单见 [README.md](./README.md)。
+
+
 日期：2026-08-04  
 范围：chat-first 主路径已稳定后，旧闭环与冗余代码可否删除。
 

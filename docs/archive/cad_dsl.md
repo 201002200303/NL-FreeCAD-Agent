@@ -1,5 +1,9 @@
 # CAD DSL — Plan and Tool JSON Format
 
+> **归档文档**：本文记录的是已被取代的历史方案，不是当前实现依据。
+> 当前主线见 [development_mainline.md](../development_mainline.md) / [code_mode.md](../code_mode.md)；归档清单见 [README.md](./README.md)。
+
+
 ## 概述
 
 Agent 不生成 FreeCAD Python 代码，而是生成结构化的 JSON Plan。Plan 中的每个步骤调用一个 CAD Tool。这种格式就是 NL-FreeCAD-Agent 的 CAD DSL。

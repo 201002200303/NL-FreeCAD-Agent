@@ -1,6 +1,6 @@
 # 四旋翼样例（X 布局 + 云台相机）
 
-可运行脚本：`agent_service/data/_drone_quad_x.cad.py`（粘进 CAD Playground 即可）。
+可运行脚本：[`quad_drone_x.cad.py`](./quad_drone_x.cad.py)（粘进 CAD Playground 即可）。
 
 这是「多件装配」的**标准写法**：不是把外部 JS 逐行翻译，而是按我们的锚点（`center=`）**按接触关系重算**。适合当后续复杂模型的参考模板。
 

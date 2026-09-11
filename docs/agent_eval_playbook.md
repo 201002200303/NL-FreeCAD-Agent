@@ -319,7 +319,7 @@ B4 终态 `gate=passed`，但 soft_plan 仍显示 **3/6、P4/P5/P6 未完成**�
 ```powershell
 # L0–L1：无 FreeCAD
 cd d:\project_main\NL-FreeCAD-Agent\agent_service
-F:\ANACONDA\python.exe -m pytest -q                    # 244 passed
+F:\ANACONDA\python.exe -m pytest -q                    # 246 passed
 
 # L2–L4：FreeCADCmd
 $env:PYTHONIOENCODING='utf-8'
@@ -328,7 +328,7 @@ $env:PYTHONIOENCODING='utf-8'
 
 | 套件 | 当前 |
 |------|------|
-| `pytest`（agent_service） | 244 passed |
+| `pytest`（agent_service） | 246 passed |
 | 几何 Oracle（L3+L4） | 19 / 0 |
 | 工具冒烟（L2） | 114 / 0 |
 | v06 工具 | 14 / 0 |

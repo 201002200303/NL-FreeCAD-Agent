@@ -1,6 +1,10 @@
 # Historical Architecture — NL-FreeCAD-Agent
 
-> 本文记录 V0.1 的 Plan-as-Script 架构，不是当前实现依据。当前主线见 [code_mode.md](code_mode.md) 与 [development_mainline.md](development_mainline.md)。下文“不让 LLM 生成代码”等决策已被 ADR-0001 取代。
+> **归档文档**：本文记录的是已被取代的历史方案，不是当前实现依据。
+> 当前主线见 [development_mainline.md](../development_mainline.md) / [code_mode.md](../code_mode.md)；归档清单见 [README.md](./README.md)。
+
+
+> 本文记录 V0.1 的 Plan-as-Script 架构，不是当前实现依据。当前主线见 [code_mode.md](../code_mode.md) 与 [development_mainline.md](../development_mainline.md)。下文“不让 LLM 生成代码”等决策已被 ADR-0001 取代。
 
 ## 双进程架构
 

@@ -1,6 +1,10 @@
 # V0.9 架构升级实施手册（可执行版）
 
-> 历史说明：本文曾是 V0.9 的执行依据，现已归档为路线演进记录。当前唯一执行依据见 [development_mainline.md](development_mainline.md)。
+> **归档文档**：本文记录的是已被取代的历史方案，不是当前实现依据。
+> 当前主线见 [development_mainline.md](../development_mainline.md) / [code_mode.md](../code_mode.md)；归档清单见 [README.md](./README.md)。
+
+
+> 历史说明：本文曾是 V0.9 的执行依据，现已归档为路线演进记录。当前唯一执行依据见 [development_mainline.md](../development_mainline.md)。
 > 按顺序执行，每完成一个阶段跑一次对应测试，通过后再进下一阶段。
 > 基线：`0ca25ae`（dev 分支）。运行环境：Windows / PowerShell / Python 3.12。
 

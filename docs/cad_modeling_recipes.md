@@ -132,7 +132,7 @@ for side, suffix in [(0, "A"), (1, "B")]:
 
 完整脚本（机身/X 机臂/动力组/双叶桨/起落架/云台）：
 
-`agent_service/data/_drone_quad_x.cad.py`
+[`docs/samples/quad_drone_x.cad.py`](./samples/quad_drone_x.cad.py)
 
 贴进 CAD Playground 直接运行（先 `cad.delete(names)` 清场）。
 

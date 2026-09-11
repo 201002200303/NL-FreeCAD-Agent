@@ -1,5 +1,9 @@
 # 工具整测台（TEST）
 
+> **归档文档**：本文记录的是已被取代的历史方案，不是当前实现依据。
+> 当前主线见 [development_mainline.md](../development_mainline.md) / [code_mode.md](../code_mode.md)；归档清单见 [README.md](./README.md)。
+
+
 > **2026-09-10 起**：`cad.sweep` / `cad.wedge` **已从模型可见目录移除**（即
 > `CAD_TO_TOOL` 不再包含它们，`CAD_API_TEST` 已删除）。工具本体仍在
 > `TOOL_REGISTRY`（L2 冒烟覆盖）。原因：两者没有几何 Oracle 用例，暴露给模型只会换来失败回合。
@@ -8,7 +12,7 @@
 > 跑 `python scripts/sync_cad_manifest.py`，并**必须先补 L3/L4 Oracle 用例**
 > （`freecad_addon/AICADAgent/tests/geometry_oracle/cases.py`）。
 
-脚本：`agent_service/data/_tool_test_bench.cad.py`（该目录被 gitignore，属本地人工台）
+脚本：`agent_service/data/_tool_test_bench.cad.py`（本地人工台产物，位于被 gitignore 的 `agent_service/data/`，仓库内不提供）
 
 ## 你怎么验
 

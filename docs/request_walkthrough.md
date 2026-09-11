@@ -122,7 +122,7 @@ render("chat_core",
 | `prompts/vision.md` | 仅 VLM 评估用，不进主 chat system |
 | `prompts/compress.md` | `/agent/compress` 压缩历史 |
 
-**重要**：主模型 **不再注入 53 工具完整 schema**。建模知识写在 `chat_core` + 每轮 user 里的「朝向速查」。
+**重要**：主模型 **不再注入 55 工具完整 schema**。建模知识写在 `chat_core` + 每轮 user 里的「朝向速查」。
 
 改风格：先改 `chat_core.md`；见 `prompts/README.md`。
 

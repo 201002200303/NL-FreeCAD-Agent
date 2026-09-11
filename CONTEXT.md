@@ -45,6 +45,11 @@ Phase Program 执行前后文档状态的紧凑差异，包括新增、删除和
 
 ## Known gaps（暂缓）
 
-- 宿主门闩未完全锁死：见 `docs/tech_debt.md`（TD-PHASE-*）。
-- 工具层缺对照 FreeCAD 官方 Placement/默认轴的几何 Oracle：见 `docs/tool_validation_pipeline.md`。
+当前仍未解决的问题集中在 [docs/tech_debt.md](docs/tech_debt.md)：
+
+- 同一轮出现多个 Phase Program 时，只归约最后一个回执（`TD-PHASE-4`）。
+- `gate=passed` 时 soft_plan 的阶段显示归属不一致（`TD-PLAN-1`，纯显示问题）。
+- 视觉 `warn → 自动修码` 闭环未在 GUI 手动验证（`TD-VISION-1`）。
+
+已解决的问题（宿主门闩 TD-PHASE-1/2/3、工具层几何 Oracle）见 `tech_debt.md` 的"已还清"表。
 
