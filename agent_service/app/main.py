@@ -1,12 +1,15 @@
 """HTTP layer. Workflow logic lives in app.workflow.chat."""
 import asyncio
 import json
+import logging
+import traceback
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app import config as app_config
 from app.config import VERSION
@@ -62,6 +65,36 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+_logger = logging.getLogger(__name__)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """未捕获异常：落完整 traceback 到日志，并回一个能自诊的 JSON。
+
+    默认 FastAPI 只回 `Internal Server Error`（纯文本），客户端只能转述
+    「HTTP 500」——用户和我们都无从下手。这里带回异常类型/消息与 request_id，
+    日志里有对应 traceback。
+    """
+    request_id = uuid.uuid4().hex[:12]
+    tb = traceback.format_exc()
+    _logger.error(
+        "[request_id=%s] 未处理异常 %s %s\n%s",
+        request_id,
+        request.method,
+        request.url.path,
+        tb,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": f"{type(exc).__name__}: {exc}",
+            "error_type": type(exc).__name__,
+            "request_id": request_id,
+            "path": request.url.path,
+        },
+    )
 
 
 def _dump_doc(document_state):

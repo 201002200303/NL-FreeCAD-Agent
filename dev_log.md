@@ -1,5 +1,36 @@
 # Development Log
 
+## 2026-09-11: HTTP 500 可诊断化 + 修复脏客户端状态导致的会话级 500
+
+**触发**: 用户报「Agent 服务返回 HTTP 500 Internal Server Error（127.0.0.1:8765）」。
+服务端无全局异常处理器、启动未留日志 → **500 零信息**，无法归因。
+
+**修复 1（可观测性，根因）**:
+- `app/main.py`: 加 `@app.exception_handler(Exception)` → 记完整 traceback（含 request_id）
+  并返回 JSON `{detail, error_type, request_id, path}`，不再只回裸的 `Internal Server Error`。
+- `freecad_addon/AICADAgent/http_errors.py`: HTTPError 时读出响应体，把服务端 `detail`
+  和 `request_id` 拼进用户可见文案。
+- 手册补：服务务必用 `-RedirectStandardError` 落日志，否则 traceback 丢失。
+
+**修复 2（真实 500，畸形客户端状态）**: 用畸形输入探测服务端，命中 2 类 500，
+日志为 `AttributeError: 'str' object has no attribute 'items'` /
+`'int' object has no attribute 'get'`。根因：`ChatRequest` 只约束
+`tool_results: list[dict]` / `session_memory: Optional[dict]` 的**外层**类型，
+内部值不校验，却直接被 `classify_chat_step`（在 trace 之前）、`_build_pending_user`、
+`build_compact_document_context`、`reduce_phase_feedback` 直接 `.get()`/`.items()`。
+脏状态由客户端每轮原样重发 → **会话永久 500，用户无法自救**。
+- 落点选在 workflow 入口一次性补齐形状（不在 5 个消费点撒守卫）：
+  `app/workflow/sanitize.py` 新增 `sanitize_tool_results` / `sanitize_memory_pack`，
+  在 `chat_turn` 与 `classify_chat_step` 顶部调用。
+
+**测试**: 新增 `test_server_error_handler.py`(3) / `test_malformed_client_state.py`(12)，
+扩 `test_client_http_errors.py`(+4)。全量 **229 passed**。真实服务复验畸形探测：
+500 命中 2 → **0**，正常输入不受影响。
+
+**顺带**: 发现工作区 `docs/agent_eval_playbook.md` 被编辑器 markdown 格式化器改坏
+（`` `cad.`* ``、`` `**passed**` `` 等行内代码被切断），已回退到已提交版本；
+手册 pytest 计数 211 → 229。
+
 ## 2026-09-10: L5 验证手册固化探针提示词（docs/agent_eval_playbook.md）
 
 **问题**: B1/B4 的提示词此前**没有任何持久化** —— B1 只是 `eval_run.py` 里的

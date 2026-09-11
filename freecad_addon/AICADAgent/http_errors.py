@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import socket
 import urllib.error
 
@@ -19,6 +20,33 @@ _START_CMD = (
 def _winerror(exc: BaseException) -> int | None:
     value = getattr(exc, "winerror", None)
     return int(value) if value is not None else None
+
+
+def _http_error_body(exc: BaseException) -> str:
+    """读 HTTPError 的响应体（服务端 500 会带 detail / request_id）。"""
+    reader = getattr(exc, "read", None)
+    if not callable(reader):
+        return ""
+    try:
+        raw = reader()
+    except Exception:  # noqa: BLE001 - 读不到就算了
+        return ""
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", "replace")
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    # 服务端约定回 JSON；能解析就取 detail，否则原文截断
+    try:
+        payload = json.loads(text)
+        if isinstance(payload, dict):
+            detail = payload.get("detail")
+            if detail:
+                rid = payload.get("request_id")
+                return f"{detail}" + (f"（request_id={rid}）" if rid else "")
+    except Exception:  # noqa: BLE001
+        pass
+    return text[:300]
 
 
 def describe_http_failure(exc: BaseException, *, base_url: str) -> str:
@@ -45,6 +73,10 @@ def describe_http_failure(exc: BaseException, *, base_url: str) -> str:
         return f"与 Agent 服务的连接被中断（{base_url}）。服务可能刚重启，请重试"
 
     if isinstance(exc, urllib.error.HTTPError):
+        # 500 只报「Internal Server Error」等于没报；带上服务端给的 detail
+        detail = _http_error_body(exc)
+        if detail:
+            return f"Agent 服务返回 HTTP {exc.code}（{base_url}）：{detail}"
         return f"Agent 服务返回 HTTP {exc.code} {exc.reason}（{base_url}）"
 
     return f"请求 Agent 服务失败（{base_url}）：{exc}"

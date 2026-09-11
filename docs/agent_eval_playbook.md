@@ -36,6 +36,22 @@ L0–L4 全绿**不代表效果可用**：几何再对，模型若写出整机 `
    ```
 2. **改了插件端代码必须重启 FreeCAD GUI**（`cad_tools` 不热加载）。
 
+> **跑探针务必让服务日志落文件**。裸启动时 500 的 traceback 随隐藏控制台丢失，
+> 只能看到「HTTP 500」，无从归因。建议：
+>
+> ```powershell
+> Start-Process -FilePath 'F:\ANACONDA\python.exe' `
+>   -ArgumentList '-m','uvicorn','app.main:app','--host','127.0.0.1','--port','8765' `
+>   -WorkingDirectory 'd:\project_main\NL-FreeCAD-Agent\agent_service' `
+>   -WindowStyle Hidden `
+>   -RedirectStandardOutput 'agent_service\data\_service.log' `
+>   -RedirectStandardError  'agent_service\data\_service_err.log'
+> ```
+>
+> 遇到 500 时：客户端现在会带出服务端的 `detail` 与 `request_id`，
+> 用它去 `data\_service_err.log` 里 grep 对应 traceback。
+```
+
 ### 跑一条探针
 
 ```powershell
@@ -266,7 +282,7 @@ B4 终态 `gate=passed`，但 soft_plan 仍显示 **3/6、P4/P5/P6 未完成**�
 ```powershell
 # L0–L1：无 FreeCAD
 cd d:\project_main\NL-FreeCAD-Agent\agent_service
-F:\ANACONDA\python.exe -m pytest -q                    # 211 passed
+F:\ANACONDA\python.exe -m pytest -q                    # 229 passed
 
 # L2–L4：FreeCADCmd
 $env:PYTHONIOENCODING='utf-8'
@@ -275,7 +291,7 @@ $env:PYTHONIOENCODING='utf-8'
 
 | 套件 | 当前 |
 |------|------|
-| `pytest`（agent_service） | 211 passed |
+| `pytest`（agent_service） | 229 passed |
 | 几何 Oracle（L3+L4） | 19 / 0 |
 | 工具冒烟（L2） | 114 / 0 |
 | v06 工具 | 14 / 0 |

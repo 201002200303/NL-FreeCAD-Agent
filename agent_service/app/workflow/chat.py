@@ -34,7 +34,11 @@ from app.vision.memory import (
     update_vision_memory,
 )
 from app.vision.service import format_vision_for_prompt, needs_code_revision
-from app.workflow.sanitize import sanitize_tool_calls
+from app.workflow.sanitize import (
+    sanitize_memory_pack,
+    sanitize_tool_calls,
+    sanitize_tool_results,
+)
 
 
 def classify_chat_step(
@@ -44,12 +48,11 @@ def classify_chat_step(
     vision_hard_issue: bool = False,
 ) -> str:
     """Trace 步骤标签：同一用户请求内区分 code_gen / repair / vision_revise / feedback。"""
+    tool_results = sanitize_tool_results(tool_results)
     if tool_results:
         failed = False
         succeeded_cad = False
         for item in tool_results:
-            if not isinstance(item, dict):
-                continue
             call = item.get("tool_call") or {}
             er = item.get("execution_result") or {}
             status = (er.get("status") or "").lower()
@@ -87,6 +90,10 @@ def chat_turn(
 ) -> dict:
     """处理一轮对话。返回给 HTTP / 客户端的结构化结果。"""
     sid = session_id or f"session_{uuid.uuid4().hex[:8]}"
+    # 客户端回传的结构只在外层有 schema 约束，这里补齐内层形状，
+    # 否则脏状态会让每轮都 500（客户端每轮原样重发，用户无法自救）。
+    tool_results = sanitize_tool_results(tool_results)
+    session_memory = sanitize_memory_pack(session_memory)
     plan_mode = config.CHAT_PLAN_MODE_DEFAULT if plan_mode is None else bool(plan_mode)
     use_vision = vision_available(request_enabled=vision_enabled)
 
