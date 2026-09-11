@@ -30,9 +30,15 @@ load_dotenv(_env_path)
 
 LLM_MAX_ATTEMPTS = int(os.getenv("LLM_MAX_ATTEMPTS", "2") or "2")
 LLM_RETRY_BASE_DELAY = float(os.getenv("LLM_RETRY_BASE_DELAY", "1.0") or "1.0")
-# max_tokens = 输出上限（与输入里的工具表无关）。40960 过大易拖慢/超时；默认给足一轮多 tool_calls
-LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "16384") or "16384")
-LLM_TIMEOUT_SEC = float(os.getenv("LLM_TIMEOUT_SEC", "180") or "180")
+# max_tokens = 单次**输出**上限（不是上下文窗口），且**含推理 token**：
+# deepseek-flash 是推理模型，thinking 不可关，推理与正式 JSON 共享这份预算。
+# 端点实测上限 393216 —— 传 800000 会 400「valid range of max_tokens is [1, 393216]」。
+# 给低了（如 16384）预算会被思考烧光，正式 JSON 写到一半 finish_reason=length，
+# 用户看到的是「LLM 调用失败」。
+LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "393216") or "393216")
+# 预算调大后单轮更久（实测 16k token ≈ 83s）；超时须同步放大，
+# 否则只是把「截断」换成「超时」。
+LLM_TIMEOUT_SEC = float(os.getenv("LLM_TIMEOUT_SEC", "600") or "600")
 
 
 def _get_llm_config() -> tuple[str, str, str]:
@@ -225,10 +231,18 @@ def _attempt_llm_call(
     choice = response.choices[0]
     content = _message_text(choice.message)
     finish_reason = getattr(choice, "finish_reason", None)
+    # 推理 token 与正式输出共享 max_tokens：把用量打出来，
+    # 下次再遇 finish=length 能一眼看出是「思考烧光预算」还是「模型话多」。
+    usage = getattr(response, "usage", None)
+    reasoning_tokens = getattr(
+        getattr(usage, "completion_tokens_details", None), "reasoning_tokens", None
+    )
     print(
         f"[LLM Provider] ok in {time.time() - t0:.1f}s "
         f"model={model} out_chars={len(content)} max_tokens={LLM_MAX_TOKENS} "
-        f"finish={finish_reason}"
+        f"finish={finish_reason} "
+        f"completion_tokens={getattr(usage, 'completion_tokens', None)} "
+        f"reasoning_tokens={reasoning_tokens}"
     )
     try:
         return _extract_json_object(content), response, None, content
@@ -237,7 +251,8 @@ def _attempt_llm_call(
         # 这不是模型「写坏了」，调大 LLM_MAX_TOKENS 才能根治
         if finish_reason == "length":
             error = (
-                f"JSONDecodeError: 输出被 max_tokens({LLM_MAX_TOKENS}) 截断，"
+                f"JSONDecodeError: 输出被 max_tokens({LLM_MAX_TOKENS}) 截断"
+                f"（reasoning_tokens={reasoning_tokens}），"
                 f"请调大 LLM_MAX_TOKENS。原始错误: {e}"
             )
         else:

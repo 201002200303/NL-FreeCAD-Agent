@@ -12,12 +12,16 @@ def sanitize_tool_calls(calls: list | None, prefix: str = "repair") -> list[dict
     for i, call in enumerate(calls or []):
         if not isinstance(call, dict) or not call.get("tool"):
             continue
+        # expected_effect 的内部契约是 dict-or-缺省。实测模型会把它写成自然语言
+        # 字符串，那会先打崩 ChatResponse 的 schema，再打崩客户端
+        # session_memory 的 `expected.get("type")`。非 dict 一律丢弃。
+        effect = call.get("expected_effect")
         sanitized.append({
             "call_id": call.get("call_id") or f"{prefix}_{i + 1}",
             "tool": call["tool"],
             "args": call.get("args") or {},
             "description": call.get("description") or "",
-            "expected_effect": call.get("expected_effect"),
+            "expected_effect": effect if isinstance(effect, dict) else None,
         })
     return sanitized
 

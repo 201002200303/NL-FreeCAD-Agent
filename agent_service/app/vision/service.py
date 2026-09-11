@@ -109,6 +109,8 @@ def assess_views(
     try:
         from openai import OpenAI
 
+        from app.llm.llm_provider import _message_text
+
         timeout = float(getattr(config, "LLM_TIMEOUT_SEC", 180) or 180)
         client = OpenAI(
             api_key=config.VISION_API_KEY,
@@ -130,10 +132,22 @@ def assess_views(
                 {"role": "user", "content": content},
             ],
             temperature=0.2,
-            max_tokens=1500,
+            # 与主模型同源的推理模型：reasoning token 计入 max_tokens。
+            # 1500 会被思考烧光 → JSON 截断 → 异常 → 视觉**静默**降级为 skip
+            # （看起来像「没开视觉」，实际是每次都失败）。
+            max_tokens=32768,
             response_format={"type": "json_object"},
         )
-        text = (response.choices[0].message.content or "").strip()
+        choice = response.choices[0]
+        # 复用主路径的取值：reasoning 模型偶发把答案放进 reasoning_content
+        text = _message_text(choice.message).strip()
+        usage = getattr(response, "usage", None)
+        print(
+            f"[vision] finish={getattr(choice, 'finish_reason', None)} "
+            f"out_chars={len(text)} completion_tokens={getattr(usage, 'completion_tokens', None)} "
+            f"reasoning_tokens="
+            f"{getattr(getattr(usage, 'completion_tokens_details', None), 'reasoning_tokens', None)}"
+        )
         parsed = _parse_json(text)
         verdict = parsed.get("verdict", "unknown")
         result = {

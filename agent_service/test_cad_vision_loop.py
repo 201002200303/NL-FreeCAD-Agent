@@ -126,3 +126,77 @@ def test_classify_chat_step_names():
         )
         == "tool_feedback"
     )
+
+
+# ── 视觉调用的输出预算与 reasoning 回退 ─────────────────────────
+#
+# 视觉模型与主模型同源（deepseek-flash，推理模型），reasoning token 计入
+# max_tokens。原值 1500 会被思考烧光 → JSON 截断 → 异常 → 视觉**静默**降级
+# 为 skip（表现为「像没开视觉」，实际每轮都失败），因此需要显式守卫。
+
+
+def _patch_vision(monkeypatch, message):
+    calls = {}
+
+    class FakeChoice:
+        finish_reason = "stop"
+
+        def __init__(self):
+            self.message = message
+
+    class FakeResp:
+        choices = [FakeChoice()]
+        usage = None
+
+    class FakeClient:
+        def __init__(self, **kw):
+            pass
+
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kwargs):
+                    calls["kwargs"] = kwargs
+                    return FakeResp()
+
+    monkeypatch.setattr("app.vision.service.vision_available", lambda **kw: True)
+    monkeypatch.setattr("app.config.VISION_API_KEY", "k")
+    monkeypatch.setattr("app.config.VISION_MODEL", "vision-x")
+    monkeypatch.setattr("app.config.VISION_BASE_URL", "http://x")
+    monkeypatch.setattr("openai.OpenAI", FakeClient)
+    return calls
+
+
+VIEWS = [{"name": "iso", "image_b64": "AAA", "mime": "image/png"}]
+
+
+def test_vision_output_budget_is_high_enough_for_a_reasoning_model(monkeypatch):
+    """1500 会被推理烧光导致视觉静默失效；挡住把它调回小值。"""
+    msg = type("M", (), {"content": '{"verdict":"ok","summary":"","issues":[],"suggestions":[]}'})()
+    calls = _patch_vision(monkeypatch, msg)
+
+    assess_views(views=VIEWS, user_goal="建高达")
+
+    assert calls["kwargs"]["max_tokens"] >= 8192
+
+
+def test_vision_falls_back_to_reasoning_content(monkeypatch):
+    """reasoning 模型偶发把答案放进 reasoning_content、content 为空。
+
+    主路径已有该回退，视觉路径此前没有 —— 同样会静默 skip。
+    """
+    msg = type(
+        "M",
+        (),
+        {
+            "content": "",
+            "reasoning_content": '{"verdict":"bad","summary":"缺右臂","issues":["右臂缺失"],"suggestions":[]}',
+        },
+    )()
+    _patch_vision(monkeypatch, msg)
+
+    res = assess_views(views=VIEWS, user_goal="建高达")
+
+    assert res["ok"] is True
+    assert res["verdict"] == "bad"
+    assert "右臂" in "".join(res["issues"])

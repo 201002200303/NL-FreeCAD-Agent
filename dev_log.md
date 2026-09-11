@@ -1,5 +1,72 @@
 # Development Log
 
+## 2026-09-11: 修复「LLM 调用失败」——推理 token 吃光输出预算
+
+**触发**: 用户跑法拉利 911（5 阶段复杂任务），前几轮正常，随后报
+`LLM 调用失败，请重试或检查 API 配置`。服务日志（上一条提交刚加的日志）直接给出证据：
+
+```
+[LLM Provider] ok in 81.3s out_chars=57493 max_tokens=16384 finish=length
+[LLM Provider] JSON 解析失败 (finish=length)
+[LLM Provider] ok in 70.6s out_chars=50    max_tokens=16384 finish=length   ← 70s 只有 50 字符正式输出
+```
+
+**根因（实测坐实）**: `deepseek-flash` 是推理模型且 thinking 不可关，
+**`reasoning_tokens` 计入 `max_tokens`**。usage 实测：
+
+```
+max_tokens=131072 → completion_tokens=70, reasoning_tokens=68   # 正式输出 2 字，68 token 花在思考
+```
+
+复杂任务单轮推理 8k–14k token，`16384` 被思考烧光 → 正式 JSON 写一半就
+`finish_reason=length` → 解析失败 → 重试同样失败 → 面板「LLM 调用失败」。
+旧 `.env` 注释曾断言「16384 够用」，被实测推翻。
+
+**修复**:
+- `LLM_MAX_TOKENS` 16384 → **393216**（端点实测上限；传 800000 会 400
+  `valid range of max_tokens is [1, 393216]`）。`.env` / `.env.example` /
+  `app/config.py` / `llm_provider.py` 四处同步。
+- `LLM_TIMEOUT_SEC` 180 → **600**。实测 16k token ≈ 83s；预算调大而超时不调，
+  只是把「截断」换成「超时」。
+- `CONVERSATION_BUDGET_CHARS` 120000 → **400000**（输入侧预算，≠ max_tokens；
+  模型窗口 1M，这里约 13%）。
+- 可观测性：`_attempt_llm_call` 打印 `completion_tokens` / `reasoning_tokens`，
+  截断错误里带上 `reasoning_tokens`，下次一眼看出 token 花在哪。
+
+**同批修掉的另一个 500（Bug A）**: 响应构造阶段
+`ChatResponse.tool_calls.0.expected_effect` 校验失败 —— 实测模型把
+`expected_effect` 写成自然语言字符串（`"车身上出现前后两处轮拱…"`），
+而契约是 dict。崩在 LLM **成功之后**，所以只看到 500。
+即使侥幸过关，客户端 `session_memory` 的 `expected.get("type")` 也会崩。
+修在 `sanitize_tool_calls`（LLM→客户端契约边界）：非 dict 一律归一为 `None`，
+与 `sanitize_tool_results` 同一处收口。
+
+**验证**:
+- 新增 `test_tool_call_contract.py`(7)、扩 `test_llm_provider_robustness.py`(+4)，
+  全量 **244 passed**（+15）。含「防回退」守卫：`LLM_MAX_TOKENS` 不得 <65536、
+  超时不得 <300、`config` 与 `llm_provider` 必须一致。
+- **重跑法拉利探针（真实 LLM + FreeCAD，264s）**：6 轮全部 `finish=stop`，
+  无截断、无 500、无 traceback；`gate=passed`，3/5 阶段，`cad.fuse=0`，
+  计划无整机 fuse。其中一轮 `completion_tokens=16890` —— **已超旧上限 16384**，
+  即旧配置下必然失败的那一轮。
+
+**沉淀**: `docs/agent_eval_playbook.md` 增「易被优化回去的配置」表 +
+法拉利探针基线与 token 用量证据。
+
+**同批修掉视觉路径的同类隐患（并首次验证视觉回路）**:
+排查中发现视觉调用是**同一个推理模型**，但 `max_tokens=1500`，且**缺**主路径
+那个 `reasoning_content` 回退 —— 两处都会让 JSON 截断/解析失败，而
+`assess_views` 的 `except` 会把它**静默**降级成 `skip`（表现为「像没开视觉」，
+日志里查不到原因）。
+- `max_tokens` 1500 → **32768**；取值改用主路径的 `_message_text`（复用而非重写）；
+  加打印 `finish` / `completion_tokens` / `reasoning_tokens`，让静默失效可见。
+- **首次真实验证视觉回路**（原先手册列为盲区）：带真实几何 + 4 张 1024px 真实截图
+  打 `/agent/chat`，得到 `[vision] finish=stop completion_tokens=460
+  reasoning_tokens=198`，`verdict=warn` —— 它准确识别出四张图是**高噪点**，
+  并明确区分「这是渲染管线异常、不是几何缺陷」，还建议改用 Shaded with edges。
+  VLM 确实读到了图像。手册「视觉完全未验」的盲区已改为「已验到裁决层，
+  仅 `warn→自动修码` 闭环仍需 GUI 手跑」。
+
 ## 2026-09-11: HTTP 500 可诊断化 + 修复脏客户端状态导致的会话级 500
 
 **触发**: 用户报「Agent 服务返回 HTTP 500 Internal Server Error（127.0.0.1:8765）」。

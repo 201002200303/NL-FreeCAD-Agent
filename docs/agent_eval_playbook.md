@@ -221,6 +221,25 @@ isValid    : True
 |--------|------|------|
 | `创建一个边长 10 的立方体，中心在原点` | 1.2 | gate=passed, 1/1, 2 轮, 6s —— 冒烟用 |
 | `创建一个 50x50x50 的方块，导出为 STL 文件` | 1.2 | gate=passed, 1/1, 2 轮, 6s —— 验证导出隔离 |
+| `做一个法拉利911，具备汽车的基本外观特征，细节饱满，完成建模后再精修` | 1.2 | gate=passed, 3/5, 6 轮, 264s —— 暴露推理预算缺陷，见下 |
+
+**法拉利探针的价值**：它是第一个把「**输出预算被推理烧光**」暴露出来的用例。
+deepseek-flash 的 `reasoning_tokens` 计入 `max_tokens`，复杂任务单轮推理
+动辄 8k–14k token；`LLM_MAX_TOKENS=16384` 下正式 JSON 写不完就
+`finish_reason=length` → 面板只显示「LLM 调用失败」。
+
+实测（修复后一轮完整运行的 token 用量）：
+
+```
+completion_tokens=4597   reasoning_tokens=3225   finish=stop
+completion_tokens=10455  reasoning_tokens=8487   finish=stop
+completion_tokens=16890  reasoning_tokens=14109  finish=stop   ← 已超旧上限 16384
+```
+
+推理占输出 **~80%**。端点实测上限 `393216`（传 800000 → 400
+`valid range of max_tokens is [1, 393216]`）。现配置 `LLM_MAX_TOKENS=393216`
+且 `LLM_TIMEOUT_SEC=600`（预算调大后单轮可达 70s+，超时不跟着放大就只是
+把「截断」换成「超时」）。
 
 ---
 
@@ -246,14 +265,32 @@ isValid    : True
 
 ## 6. 已知盲区与未解问题
 
-### 盲区：视觉回路完全未验
+### 视觉回路：已验证（原为盲区）
 
-无头驱动 `vision_enabled` 恒为 False（FreeCADCmd 无 GUI，截不了图）。因此：
+无头驱动 `vision_enabled` 恒为 False（FreeCADCmd 无 GUI，截不了图），
+所以原判为「三视图裁决、视觉驱动修码、`vision: warn` 链路全部未验」。
+**现已用「真实几何 + 4 张 1024px 真实截图」直接打 `/agent/chat` 补齐：**
 
-- ✅ 已验证：规划、阶段门闩、装配策略、几何正确性、导出
-- ❌ **未验证**：三视图裁决、视觉驱动的修码、`vision: warn` 触发链路
+```
+[vision] finish=stop out_chars=485 completion_tokens=460 reasoning_tokens=198
+verdict=warn  summary="四张视图均呈现为均匀的高频彩色噪点…这更像渲染输出异常，而不是几何缺陷"
+```
 
-历史会话里 `视觉: warn` 相当常见，这块风险不低。**需在 GUI 面板里手跑 B1/B4 补齐。**
+VLM 确实读到了图像内容并给出结构化、可执行的判断。至此：
+
+- ✅ 规划、阶段门闩、装配策略、几何正确性、导出
+- ✅ 三视图裁决（VLM 能看图并给 verdict/issues/suggestions）
+- ⬜ 仍需 GUI 手跑：`vision: warn` → 自动修码的**闭环**（无头只能到裁决这一步）
+
+**顺带修掉视觉路径的两个隐患**（与主路径同类的推理预算问题）：
+
+| 隐患 | 后果 |
+|------|------|
+| `max_tokens=1500`（同源推理模型） | reasoning 约占输出 43%，复杂场景可被烧光 → JSON 截断 → 异常 → 视觉**静默**降级 `skip` |
+| 缺 `reasoning_content` 回退 | 模型偶发把答案放 reasoning、`content` 为空时，主路径有回退、视觉路径没有 → 同样静默 `skip` |
+
+现 `max_tokens=32768` 并复用主路径的 `_message_text`，且打印
+`finish` / `completion_tokens` / `reasoning_tokens`，静默失效会立刻暴露在日志里。
 
 ### 未解：阶段归属不一致
 
@@ -282,7 +319,7 @@ B4 终态 `gate=passed`，但 soft_plan 仍显示 **3/6、P4/P5/P6 未完成**�
 ```powershell
 # L0–L1：无 FreeCAD
 cd d:\project_main\NL-FreeCAD-Agent\agent_service
-F:\ANACONDA\python.exe -m pytest -q                    # 229 passed
+F:\ANACONDA\python.exe -m pytest -q                    # 244 passed
 
 # L2–L4：FreeCADCmd
 $env:PYTHONIOENCODING='utf-8'
@@ -291,13 +328,29 @@ $env:PYTHONIOENCODING='utf-8'
 
 | 套件 | 当前 |
 |------|------|
-| `pytest`（agent_service） | 229 passed |
+| `pytest`（agent_service） | 244 passed |
 | 几何 Oracle（L3+L4） | 19 / 0 |
 | 工具冒烟（L2） | 114 / 0 |
 | v06 工具 | 14 / 0 |
 | 多目标导出 | 14 / 0 |
 | cad 程序样例 | 7 / 0 |
 | 两端 runtime 同步 | ✅ |
+
+### 易被「优化」回去的配置（已有测试挡住）
+
+| 配置 | 值 | 为什么不能调小 |
+|------|-----|---------------|
+| `LLM_MAX_TOKENS` | `393216` | 推理 token 计入此预算；推理约占输出 80%，给小了 JSON 被截断 →「LLM 调用失败」 |
+| `LLM_TIMEOUT_SEC` | `600` | 预算调大后单轮可达 70s+；超时不放大只是把「截断」换成「超时」 |
+| `CONVERSATION_BUDGET_CHARS` | `400000` | 输入侧预算（≠ `max_tokens`）。模型窗口 1M，这里只用约 13% |
+| 视觉 `max_tokens` | `32768` | 同源推理模型；1500 会被思考烧光 → 视觉**静默**降级 `skip`，日志无痕迹 |
+
+对应守卫：`test_llm_provider_robustness.py`
+（`test_output_budget_is_high_enough_for_a_reasoning_model`、
+`test_timeout_scales_with_the_budget`、`test_config_and_provider_agree_on_output_budget`）、
+`test_cad_vision_loop.py`
+（`test_vision_output_budget_is_high_enough_for_a_reasoning_model`、
+`test_vision_falls_back_to_reasoning_content`）。
 
 ---
 
